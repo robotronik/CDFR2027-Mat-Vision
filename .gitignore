@@ -1,0 +1,19 @@
+# Artefacts de données (calibration, captures, images générées)
+data/*
+!data/.gitkeep
+
+# Python
+__pycache__/*
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Environnements virtuels
+.venv/*
+venv/*
+env/*
+bin/*
+lib/*
+lib64/*
+include/*
+tools/*
