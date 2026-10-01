@@ -7,7 +7,7 @@
     "fps": 30,
     "fourcc": "MJPG",
     "buffer_size": 1,
-    "warmup_frames": 5,
+    "warmup_frames": 30,
     "auto_exposure": true,
     "auto_white_balance": true
   },
@@ -60,7 +60,7 @@
     "chessboard_cols": 9,
     "chessboard_rows": 6,
     "square_size_mm": 26.5,
-    "target_frames": 15,
+    "target_frames": 20,
     "min_board_area_ratio": 0.04,
     "max_board_area_ratio": 0.95,
     "min_sharpness": 60.0,

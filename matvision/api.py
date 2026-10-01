@@ -11,9 +11,10 @@ La liste des routes n'est écrite qu'à un seul endroit : la fonction
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Callable
 
 from flask import Flask, Response, jsonify, render_template, request
 
@@ -24,9 +25,21 @@ log = logging.getLogger(__name__)
 
 __all__ = ["create_app"]
 
+#: Délai avant l'arrêt effectif, pour laisser la réponse HTTP partir.
+SHUTDOWN_DELAY_S = 0.3
 
-def create_app(engine: VisionEngine, *, cors: bool = True) -> Flask:
-    """Construit l'application Flask autour d'un :class:`VisionEngine`."""
+
+def create_app(
+    engine: VisionEngine,
+    *,
+    cors: bool = True,
+    on_shutdown: Callable[[], None] | None = None,
+) -> Flask:
+    """Construit l'application Flask autour d'un :class:`VisionEngine`.
+
+    :param on_shutdown: appelée par ``POST /shutdown`` pour arrêter le serveur.
+        Sans ce rappel, la route répond ``501`` (utile en test).
+    """
     app = Flask(__name__)
     # Interface servie depuis un réseau local : on veut voir les mises à jour
     # immédiatement, donc pas de mise en cache des fichiers statiques.
@@ -89,6 +102,7 @@ def create_app(engine: VisionEngine, *, cors: bool = True) -> Flask:
                 "POST /calibration/stop": "annule la calibration",
                 "GET /calibration/result": "intrinsèques courantes",
                 "POST /snapshot": "enregistre l'image courante sur le disque",
+                "POST /shutdown": "arrête le serveur et le processus",
             },
         }
 
@@ -269,6 +283,21 @@ def create_app(engine: VisionEngine, *, cors: bool = True) -> Flask:
         if intrinsics is None:
             return _json({"message": "aucune calibration disponible", "file": str(config.intrinsics_path)}, 404)
         return _json(intrinsics.summary())
+
+    # ------------------------------------------------------------------ #
+    # Arrêt
+    # ------------------------------------------------------------------ #
+    @app.post("/shutdown")
+    def shutdown() -> Response:
+        """Arrête le moteur puis le processus (arrêt différé de ``SHUTDOWN_DELAY_S``)."""
+        if on_shutdown is None:
+            return _json({"message": "arrêt non câblé sur ce serveur"}, 501)
+
+        timer = threading.Timer(SHUTDOWN_DELAY_S, on_shutdown)
+        timer.daemon = True
+        timer.start()
+        log.info("Arrêt demandé via POST /shutdown")
+        return _json({"message": "arrêt du serveur en cours"})
 
     # ------------------------------------------------------------------ #
     # Erreurs

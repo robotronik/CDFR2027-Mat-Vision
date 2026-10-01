@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -599,6 +600,26 @@ def test_engine_and_api() -> None:
             engine.shutdown()
 
 
+def test_shutdown_route() -> None:
+    """``POST /shutdown`` déclenche l'arrêt, ou répond 501 s'il n'est pas câblé."""
+    with tempfile.TemporaryDirectory() as tmp:
+        config = make_config(Path(tmp))
+        engine = VisionEngine(config, display=False)
+        try:
+            without_callback = create_app(engine).test_client()
+            assert without_callback.post("/shutdown").status_code == 501
+
+            called = threading.Event()
+            app = create_app(engine, on_shutdown=called.set)
+            response = app.test_client().post("/shutdown")
+            assert response.status_code == 200, response.get_json()
+            assert called.wait(timeout=3.0), "le rappel d'arrêt n'a pas été appelé"
+
+            print("  ok  POST /shutdown : 501 sans rappel, 200 et arrêt déclenché avec")
+        finally:
+            engine.shutdown()
+
+
 def test_web_interface() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = make_config(Path(tmp))
@@ -662,6 +683,7 @@ TESTS = [
     test_intrinsics_resolution_mismatch,
     test_automatic_calibration,
     test_engine_and_api,
+    test_shutdown_route,
     test_web_interface,
 ]
 

@@ -392,6 +392,21 @@ function wireUp() {
     }
   });
 
+  $('btn-shutdown').addEventListener('click', async () => {
+    const question =
+      'Arrêter complètement le serveur du mat de vision ?\n\n' +
+      'La caméra sera libérée et cette interface ne répondra plus.';
+    if (!window.confirm(question)) return;
+
+    setStream(false); // ne plus solliciter un serveur qui s'arrête
+    try {
+      await api('/shutdown', { method: 'POST' });
+      toast('Serveur arrêté — relancez « python server.py »');
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+
   $('btn-cal-start').addEventListener('click', async () => {
     try {
       await api('/calibration/start', { method: 'POST' });

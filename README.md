@@ -337,7 +337,7 @@ hors ligne) donne accès à :
 | Élément | Détail |
 |---|---|
 | **Aperçu caméra** | flux MJPEG temps réel, choix de la qualité, arrêt du flux pour économiser le CPU |
-| **Commandes** | Démarrer / Arrêter / Réinitialiser / Snapshot |
+| **Commandes** | Démarrer / Arrêter / Réinitialiser / Snapshot / **Arrêter le serveur** |
 | **Plan de la table** | vue de dessus en direct : tags de coin, objets avec leur cap, axes x/y |
 | **Objets détectés** | tableau libellé, tag, x, y, a, ancienneté |
 | **Repère & caméra** | mode, résolution, fps, verrouillage du repère, inliers, résidu, pose caméra, intrinsèques |
@@ -352,6 +352,29 @@ Détails techniques utiles :
   simple balise `<img>` ou depuis OpenCV (`cv2.VideoCapture("http://…/stream")`) ;
 * les fichiers statiques ne sont pas mis en cache, pour que les modifications de
   l'interface soient visibles immédiatement après un rechargement.
+
+### 7.2 Arrêter le serveur
+
+Trois moyens équivalents, tous **propres** : le moteur est arrêté, la boucle
+vidéo jointe et la caméra libérée avant que le processus ne se termine.
+
+```bash
+# 1. depuis le terminal qui a lancé le serveur
+Ctrl+C
+
+# 2. depuis n'importe quel terminal (le PID est affiché au démarrage)
+kill <pid>
+
+# 3. depuis le réseau (curl, script, supervision…)
+curl -X POST http://<ip-lattepanda>:5000/shutdown
+```
+
+Le bouton **« Arrêter le serveur »** de l'interface web fait la même chose
+(demande de confirmation avant d'agir).
+
+> `POST /shutdown` coupe le service : ne l'exposez pas au-delà de votre réseau
+> local. Sur un serveur sans arrêt câblé (par exemple en test), la route répond
+> `501` au lieu d'agir.
 
 ---
 
@@ -379,6 +402,7 @@ Détails techniques utiles :
 | `POST` | `/calibration/stop` | Annule la calibration |
 | `GET` | `/calibration/result` | Intrinsèques courantes |
 | `POST` | `/snapshot` | Enregistre l'image courante (`?path=`) |
+| `POST` | `/shutdown` | Arrête le serveur **et le processus** (`501` si non câblé) |
 
 ### Exemples
 
@@ -424,6 +448,9 @@ curl -o preview.jpg http://192.168.1.50:5000/preview
 # Calibration à distance
 curl -X POST http://192.168.1.50:5000/calibration/start
 curl http://192.168.1.50:5000/calibration/status
+
+# Arrêt complet du serveur (libère la caméra et termine le processus)
+curl -X POST http://192.168.1.50:5000/shutdown
 ```
 
 ---

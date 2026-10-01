@@ -248,6 +248,16 @@ body {
 
 .btn.primary:hover { background: #34c04a; }
 
+.btn.danger {
+  color: #ffb3ae;
+  border-color: rgba(248, 81, 73, 0.45);
+}
+
+.btn.danger:hover {
+  background: rgba(248, 81, 73, 0.16);
+  border-color: var(--danger);
+}
+
 .toast {
   margin-left: auto;
   font-size: 13px;

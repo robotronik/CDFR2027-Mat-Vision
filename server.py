@@ -7,25 +7,37 @@ Démarrage simple (détection lancée automatiquement) ::
 
     python server.py
 
-Caméra et port personnalisés, sans fenêtre ::
+Caméra et port personnalisés, avec fenêtre locale ::
 
-    python server.py --device 0 --port 5000 --headless --autostart
+    python server.py --device 1 --port 5000 --display
 
 Depuis un autre poste du réseau local ::
 
     curl http://<ip-lattepanda>:5000/objects
+
+Arrêt du processus
+------------------
+Trois moyens équivalents, tous propres (moteur arrêté, caméra libérée) :
+
+* ``Ctrl+C`` dans le terminal qui a lancé le serveur ;
+* ``kill <pid>`` (SIGTERM) — le PID est affiché au démarrage ;
+* ``curl -X POST http://<ip>:5000/shutdown``, ou le bouton « Arrêter le serveur »
+  de l'interface web.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from werkzeug.serving import make_server  # noqa: E402
 
 from matvision.api import create_app  # noqa: E402
 from matvision.config import load_config  # noqa: E402
@@ -82,37 +94,51 @@ def main(argv: list[str] | None = None) -> int:
     if args.autostart:
         engine.start_detection()
 
-    app = create_app(engine, cors=not args.no_cors)
-
-    log.info("API disponible sur http://%s:%d/", config.api_host, config.api_port)
-    log.info("Prévisualisation : http://%s:%d/preview", config.api_host, config.api_port)
-
     stopping = threading.Event()
+    shutdown_thread: threading.Thread | None = None
 
-    def _handle_signal(_signum, _frame) -> None:
+    def run_shutdown() -> None:
+        """Arrête le serveur HTTP, puis le moteur (donc la caméra)."""
+        server.shutdown()          # rend la main quand serve_forever() s'arrête
+        engine.shutdown()
+
+    def request_stop(origin: str) -> None:
+        """Déclenche l'arrêt, une seule fois, depuis un signal ou l'API."""
+        nonlocal shutdown_thread
         if stopping.is_set():
             return
         stopping.set()
-        log.info("Arrêt demandé...")
-        engine.shutdown()
-        # werkzeug n'expose pas d'arrêt propre : on termine le processus.
-        threading.Thread(target=lambda: sys.exit(0), daemon=True).start()
+        log.info("Arrêt demandé (%s)", origin)
+        shutdown_thread = threading.Thread(target=run_shutdown, name="shutdown", daemon=True)
+        shutdown_thread.start()
 
-    signal.signal(signal.SIGINT, _handle_signal)
-    signal.signal(signal.SIGTERM, _handle_signal)
+    app = create_app(
+        engine, cors=not args.no_cors, on_shutdown=lambda: request_stop("POST /shutdown")
+    )
+    server = make_server(config.api_host, config.api_port, app, threaded=True)
+
+    signal.signal(signal.SIGINT, lambda *_: request_stop("Ctrl+C"))
+    signal.signal(signal.SIGTERM, lambda *_: request_stop("SIGTERM"))
+
+    log.info("API disponible sur http://%s:%d/", config.api_host, config.api_port)
+    log.info("Interface web     : http://%s:%d/ui", config.api_host, config.api_port)
+    log.info(
+        "Arrêt             : Ctrl+C, « kill %d » ou « curl -X POST http://%s:%d/shutdown »",
+        os.getpid(),
+        config.api_host,
+        config.api_port,
+    )
 
     try:
-        app.run(
-            host=config.api_host,
-            port=config.api_port,
-            debug=False,
-            threaded=True,
-            use_reloader=False,
-        )
-    except KeyboardInterrupt:
-        pass
-    finally:
+        server.serve_forever()
+    except KeyboardInterrupt:  # filet de sécurité si le gestionnaire n'a pas pris
+        request_stop("KeyboardInterrupt")
+
+    if shutdown_thread is not None:
+        shutdown_thread.join(timeout=5.0)
+    else:
         engine.shutdown()
+    log.info("Serveur arrêté")
     return 0
 
 
