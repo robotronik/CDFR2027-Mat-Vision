@@ -11,6 +11,7 @@ l'API REST. Trois modes :
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from enum import Enum
@@ -19,13 +20,13 @@ from typing import Any
 import cv2
 import numpy as np
 
-from .aruco import ArucoDetector, draw_markers, marker_center
+from .aruco import ArucoDetector, marker_center
 from .calibration import AutoCalibrator, Intrinsics, load_intrinsics, save_intrinsics
 from .camera import Camera, CameraError
-from .config import Config
-from .geometry import Position, build_roi_mask, polygon_hull
+from .config import Config, ObjectConfig
+from .geometry import Position, build_roi_mask
+from .overlay import annotate, draw_hud
 from .table import TableLocalization, localize_table, table_polygon_image
-from .tracker import ObjectDetection, ObjectTracker
 
 log = logging.getLogger(__name__)
 
@@ -49,12 +50,7 @@ class VisionEngine:
             config.aruco.get("dictionary", "DICT_4X4_50"),
             config.aruco.get("params"),
         )
-        self.tracker = ObjectTracker(
-            config.objects,
-            smoothing=config.detection.smoothing,
-            max_age_s=config.detection.max_age_s,
-            match_distance_mm=config.detection.match_distance_mm,
-        )
+        self.objects_config = {obj.id: obj for obj in config.objects}
         self.camera = Camera(config.camera)
 
         self._intrinsics: Intrinsics | None = load_intrinsics(config.intrinsics_path)
@@ -74,7 +70,7 @@ class VisionEngine:
         self._mode = VisionMode.IDLE
         self._localization = TableLocalization(reason="en attente")
         self._latest_frame: np.ndarray | None = None
-        self._stable_frames = 0
+        self._objects: list[dict] = []
         self._started_at = 0.0
         self._error = ""
         self._intrinsics_warning = ""
@@ -120,8 +116,7 @@ class VisionEngine:
     # ------------------------------------------------------------------ #
     def start_detection(self) -> dict:
         with self._lock:
-            self.tracker.clear()
-            self._stable_frames = 0
+            self._objects = []
             self._stats["detections"] = 0
             self._mode = VisionMode.DETECT
         log.info("Détection démarrée")
@@ -135,11 +130,10 @@ class VisionEngine:
 
     def reset(self) -> dict:
         with self._lock:
-            self.tracker.clear()
+            self._objects = []
             self._localization = TableLocalization(reason="en attente")
-            self._stable_frames = 0
             self._stats["detections"] = 0
-        return {"message": "suivi réinitialisé"}
+        return {"message": "relevés réinitialisés"}
 
     def start_calibration(self) -> dict:
         with self._lock:
@@ -182,7 +176,7 @@ class VisionEngine:
             error = self._error
             intrinsics = self._intrinsics
             intrinsics_warning = self._intrinsics_warning
-            objects = self.tracker.count
+            objects = len(self._objects)
         return {
             "running": self.running,
             "mode": mode.value,
@@ -196,9 +190,21 @@ class VisionEngine:
             "uptime_s": round(time.monotonic() - self._started_at, 1) if self._started_at else 0.0,
         }
 
-    def objects(self) -> dict:
+    def objects(self, label: str | None = None) -> dict:
+        """Objets relevés sur la dernière image, dans le repère de la table.
+
+        Une entrée par tag détecté : un élément de jeu vu par plusieurs de ses
+        tags apparaît donc plusieurs fois, à des positions très proches.
+        """
         with self._lock:
-            return {"objects": self.tracker.snapshot(), "list": self.tracker.flat()}
+            items = list(self._objects)
+        if label:
+            items = [item for item in items if item["label"].lower() == label.lower()]
+
+        by_label: dict[str, list[dict]] = {}
+        for item in items:
+            by_label.setdefault(item["label"], []).append(item)
+        return {"count": len(items), "objects": items, "by_label": by_label}
 
     def camera_position(self) -> dict:
         with self._lock:
@@ -227,8 +233,8 @@ class VisionEngine:
                 {"id": m.id, "x": m.x, "y": m.y, "a": m.a, "size": m.size} for m in table.markers
             ],
             "objects": [
-                {"id": o.id, "label": o.label or str(o.id), "size": o.size,
-                 "angle_offset": o.angle_offset}
+                {"id": o.id, "label": o.label or str(o.id),
+                 "angle_offset": o.angle_offset, "offset": list(o.offset)}
                 for o in self.config.objects
             ],
             "localization": localization.to_dict(),
@@ -293,7 +299,7 @@ class VisionEngine:
                 self._check_intrinsics_resolution(frame.shape[1], frame.shape[0])
             annotated = frame
             try:
-                annotated = self._handle_frame(frame, now)
+                annotated = self._handle_frame(frame)
             except Exception:  # pragma: no cover - garde-fou de la boucle
                 log.exception("Erreur pendant le traitement de l'image")
                 with self._lock:
@@ -322,7 +328,7 @@ class VisionEngine:
             cv2.destroyAllWindows()
 
     # ------------------------------------------------------------------ #
-    def _handle_frame(self, frame: np.ndarray, now: float) -> np.ndarray:
+    def _handle_frame(self, frame: np.ndarray) -> np.ndarray:
         with self._lock:
             mode = self._mode
             calibrator = self._calibrator
@@ -334,17 +340,17 @@ class VisionEngine:
             return calibrator.draw_overlay(frame.copy()) if self.config.detection.draw else frame
 
         if mode is VisionMode.DETECT:
-            return self._detect(frame, now)
+            return self._detect(frame)
 
         if self.config.detection.draw:
-            overlay = frame.copy()
-            self._draw_hud(overlay)
-            return overlay
+            canvas = frame.copy()
+            draw_hud(canvas, self._hud_lines())
+            return canvas
         return frame
 
     # ------------------------------------------------------------------ #
-    def _detect(self, frame: np.ndarray, now: float) -> np.ndarray:
-        """Détecte les 4 tags de coin, construit la ROI, puis les objets."""
+    def _detect(self, frame: np.ndarray) -> np.ndarray:
+        """Détecte les 4 tags de coin, construit la ROI, puis relève les objets."""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         corner_ids = self.config.table.marker_ids
 
@@ -358,7 +364,7 @@ class VisionEngine:
             min_inliers=self.config.detection.min_homography_inliers,
         )
 
-        detections: list[ObjectDetection] = []
+        objects: list[dict] = []
         object_markers: dict[int, np.ndarray] = {}
         roi_mask: np.ndarray | None = None
 
@@ -378,40 +384,45 @@ class VisionEngine:
                 object_markers = found
 
             for marker_id, corners in object_markers.items():
-                if marker_id in corner_ids:
-                    continue
-                object_config = self.tracker.objects.get(marker_id)
-                if object_config is None:
-                    continue
-                table_xy = localization.image_to_table(marker_center(corners))[0]
-                angle = localization.marker_angle_deg(corners, object_config.angle_offset)
-                detections.append(
-                    ObjectDetection(
-                        marker_id=marker_id,
-                        label=object_config.label or str(marker_id),
-                        position=Position(x=float(table_xy[0]), y=float(table_xy[1]), z=0.0, a=angle),
-                        size=object_config.size,
-                    )
-                )
+                object_config = self.objects_config.get(marker_id)
+                if object_config is not None:
+                    objects.append(self._locate(object_config, corners, localization))
 
         with self._lock:
             self._localization = localization
-            if localization.ok:
-                self._stable_frames += 1
-                if self._stable_frames >= max(1, self.config.detection.stabilize_frames):
-                    self.tracker.update(detections, now)
-                    self._stats["detections"] = len(detections)
-            else:
-                self._stable_frames = 0
-                self._stats["detections"] = 0
+            self._objects = objects
+            self._stats["detections"] = len(objects)
 
         if not self.config.detection.draw:
             return frame
 
-        overlay = frame.copy()
-        self._annotate(overlay, corner_markers, object_markers, localization, roi_mask)
-        self._draw_hud(overlay)
-        return overlay
+        canvas = frame.copy()
+        annotate(canvas, corner_markers, object_markers, localization, objects)
+        draw_hud(canvas, self._hud_lines())
+        return canvas
+
+    def _locate(
+        self, config: ObjectConfig, corners: np.ndarray, localization: TableLocalization
+    ) -> dict:
+        """Position d'un objet dans le repère de la table (mm et degrés).
+
+        Par défaut c'est le centre du tag. ``offset`` permet de viser un point
+        particulié de l'objet : le décalage est exprimé dans le repère du tag et
+        tourne avec l'orientation mesurée.
+        """
+        table_xy = localization.image_to_table(marker_center(corners))[0]
+        x, y = float(table_xy[0]), float(table_xy[1])
+        angle = localization.marker_angle_deg(corners, config.angle_offset)
+
+        offset_x, offset_y = config.offset
+        if offset_x or offset_y:
+            radians = math.radians(angle)
+            x += offset_x * math.cos(radians) - offset_y * math.sin(radians)
+            y += offset_x * math.sin(radians) + offset_y * math.cos(radians)
+
+        position = Position(x=x, y=y, z=0.0, a=angle).to_dict()
+        position.update({"id": config.id, "label": config.label or str(config.id)})
+        return position
 
     def _finish_calibration(self) -> None:
         with self._lock:
@@ -454,85 +465,10 @@ class VisionEngine:
             self._intrinsics_warning = message
 
     # ------------------------------------------------------------------ #
-    # Affichage
+    # Aide à l'affichage
     # ------------------------------------------------------------------ #
-    def _annotate(
-        self,
-        frame: np.ndarray,
-        corner_markers: dict[int, np.ndarray],
-        object_markers: dict[int, np.ndarray],
-        localization: TableLocalization,
-        roi_mask: np.ndarray | None,
-    ) -> None:
-        if roi_mask is not None:
-            hull = polygon_hull(corner_markers.values())
-            if hull is not None:
-                cv2.polylines(frame, [np.round(hull).astype(np.int32)], True, (0, 200, 0), 2)
-
-        draw_markers(frame, corner_markers, color=(255, 128, 0))
-        draw_markers(frame, object_markers, color=(0, 220, 255))
-
-        self._draw_table_axes(frame, localization)
-
-        for marker_id, corners in object_markers.items():
-            if marker_id in self.config.table.marker_ids:
-                continue
-            object_config = self.tracker.objects.get(marker_id)
-            if object_config is None or localization.homography is None:
-                continue
-            table_xy = localization.image_to_table(marker_center(corners))[0]
-            angle = localization.marker_angle_deg(corners, object_config.angle_offset)
-            center = marker_center(corners)
-            label = f"{object_config.label or marker_id} ({table_xy[0]:.0f},{table_xy[1]:.0f}) {angle:.0f}deg"
-            cv2.putText(
-                frame,
-                label,
-                (int(center[0]) - 80, int(center[1]) - 14),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 220, 255),
-                1,
-                cv2.LINE_AA,
-            )
-
-        if not localization.ok:
-            cv2.putText(
-                frame,
-                localization.reason,
-                (10, frame.shape[0] - 44),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 165, 255),
-                2,
-                cv2.LINE_AA,
-            )
-
-    def _draw_table_axes(self, frame: np.ndarray, localization: TableLocalization) -> None:
-        """Dessine l'origine et les axes de la table dans l'image."""
-        if localization.homography is None:
-            return
-        try:
-            inverse = np.linalg.inv(localization.homography)
-        except np.linalg.LinAlgError:
-            return
-        axis_length = 300.0
-        points = np.array(
-            [[0.0, 0.0], [axis_length, 0.0], [0.0, axis_length]], dtype=np.float64
-        )
-        projected = cv2.perspectiveTransform(points.reshape(-1, 1, 2), inverse).reshape(-1, 2)
-        origin, x_axis, y_axis = projected
-        if not np.all(np.isfinite(projected)):
-            return
-        origin_px = tuple(np.round(origin).astype(int))
-        cv2.arrowedLine(
-            frame, origin_px, tuple(np.round(x_axis).astype(int)), (0, 0, 255), 2, cv2.LINE_AA, tipLength=0.2
-        )
-        cv2.arrowedLine(
-            frame, origin_px, tuple(np.round(y_axis).astype(int)), (255, 0, 0), 2, cv2.LINE_AA, tipLength=0.2
-        )
-        cv2.circle(frame, origin_px, 5, (0, 255, 255), -1)
-
-    def _draw_hud(self, frame: np.ndarray) -> None:
+    def _hud_lines(self) -> list[str]:
+        """Lignes d'état écrites sur l'image d'aperçu."""
         with self._lock:
             mode = self._mode
             stats = dict(self._stats)
@@ -544,19 +480,10 @@ class VisionEngine:
             f"objets: {stats['detections']}   inliers: {localization.inliers}/{localization.total_points}",
         ]
         if localization.camera_position is not None:
-            cam = localization.camera_position
-            lines.append(f"caméra: x={cam.x:.1f} y={cam.y:.1f} z={cam.z:.1f} a={cam.a:.1f}")
+            camera = localization.camera_position
+            lines.append(
+                f"caméra: x={camera.x:.1f} y={camera.y:.1f} z={camera.z:.1f} a={camera.a:.1f}"
+            )
         if error:
             lines.append(f"erreur: {error}")
-
-        for index, text in enumerate(lines):
-            cv2.putText(
-                frame,
-                text,
-                (10, 24 + index * 22),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
+        return lines

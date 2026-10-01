@@ -16,14 +16,10 @@ log = logging.getLogger(__name__)
 
 __all__ = ["Camera", "CameraError", "list_video_devices"]
 
-#: Correspondance nom -> constante de backend OpenCV.
+#: Backends OpenCV utilisables ; toute autre valeur = détection automatique.
 _BACKENDS: dict[str, int] = {
-    "any": cv2.CAP_ANY,
     "v4l2": getattr(cv2, "CAP_V4L2", cv2.CAP_ANY),
     "dshow": getattr(cv2, "CAP_DSHOW", cv2.CAP_ANY),
-    "msmf": getattr(cv2, "CAP_MSMF", cv2.CAP_ANY),
-    "gstreamer": getattr(cv2, "CAP_GSTREAMER", cv2.CAP_ANY),
-    "auto": cv2.CAP_ANY,
 }
 
 
@@ -44,13 +40,7 @@ def _fourcc_to_code(fourcc: str) -> int:
 
 
 class Camera:
-    """Fine enveloppe autour de ``cv2.VideoCapture`` avec configuration UVC.
-
-    Utilisable comme gestionnaire de contexte ::
-
-        with Camera(cfg.camera) as cam:
-            ok, frame = cam.read()
-    """
+    """Fine enveloppe autour de ``cv2.VideoCapture`` avec configuration UVC."""
 
     def __init__(self, config: CameraConfig | None = None) -> None:
         self.config = config or CameraConfig()
@@ -142,13 +132,6 @@ class Camera:
                 "fourcc": self.config.fourcc,
             },
         }
-
-    # ------------------------------------------------------------------ #
-    def __enter__(self) -> "Camera":
-        return self.open()
-
-    def __exit__(self, *_exc: object) -> None:
-        self.close()
 
     # ------------------------------------------------------------------ #
     @staticmethod

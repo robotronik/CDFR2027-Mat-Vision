@@ -8,7 +8,6 @@ quelques utilitaires géométriques sur les coins détectés.
 from __future__ import annotations
 
 import logging
-import math
 from typing import Any, Iterable, Sequence
 
 import cv2
@@ -21,9 +20,6 @@ __all__ = [
     "default_detector_parameters",
     "markers_by_id",
     "marker_center",
-    "marker_edge_angle_deg",
-    "marker_size_px",
-    "estimate_marker_pose",
     "draw_markers",
 ]
 
@@ -165,57 +161,6 @@ def markers_by_id(
 def marker_center(corners: np.ndarray) -> np.ndarray:
     """Centre du marqueur (moyenne des 4 coins)."""
     return np.asarray(corners, dtype=np.float64).reshape(4, 2).mean(axis=0)
-
-
-def marker_edge_angle_deg(corners: np.ndarray) -> float:
-    """Angle (degrés) du bord haut-gauche -> haut-droit du marqueur dans l'image.
-
-    Le repère image a ``y`` vers le bas : l'angle est donc horaire.
-    """
-    pts = np.asarray(corners, dtype=np.float64).reshape(4, 2)
-    edge = pts[1] - pts[0]
-    return math.degrees(math.atan2(edge[1], edge[0]))
-
-
-def marker_size_px(corners: np.ndarray) -> float:
-    """Longueur moyenne des côtés du marqueur, en pixels."""
-    pts = np.asarray(corners, dtype=np.float64).reshape(4, 2)
-    sides = [np.linalg.norm(pts[(i + 1) % 4] - pts[i]) for i in range(4)]
-    return float(np.mean(sides))
-
-
-def estimate_marker_pose(
-    corners: np.ndarray,
-    marker_size: float,
-    camera_matrix: np.ndarray,
-    dist_coeffs: np.ndarray | None,
-) -> tuple[np.ndarray, np.ndarray] | None:
-    """Pose d'un marqueur carré dans le repère caméra.
-
-    Utilise ``SOLVEPNP_IPPE_SQUARE`` (recommandé par OpenCV pour les marqueurs,
-    remplace ``estimatePoseSingleMarkers`` qui est déprécié).
-    """
-    half = float(marker_size) / 2.0
-    object_points = np.array(
-        [
-            [-half, half, 0.0],
-            [half, half, 0.0],
-            [half, -half, 0.0],
-            [-half, -half, 0.0],
-        ],
-        dtype=np.float64,
-    )
-    image_points = np.asarray(corners, dtype=np.float64).reshape(4, 1, 2)
-    ok, rvec, tvec = cv2.solvePnP(
-        object_points,
-        image_points,
-        np.asarray(camera_matrix, dtype=np.float64),
-        None if dist_coeffs is None else np.asarray(dist_coeffs, dtype=np.float64),
-        flags=cv2.SOLVEPNP_IPPE_SQUARE,
-    )
-    if not ok:
-        return None
-    return rvec.reshape(3), tvec.reshape(3)
 
 
 # --------------------------------------------------------------------------- #

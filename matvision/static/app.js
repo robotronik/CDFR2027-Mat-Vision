@@ -116,7 +116,7 @@ function renderObjects(list) {
   $('objects-count').textContent = `${list.length} objet${list.length > 1 ? 's' : ''}`;
 
   if (!list.length) {
-    body.innerHTML = '<tr><td colspan="6" class="empty">Aucun objet suivi</td></tr>';
+    body.innerHTML = '<tr><td colspan="5" class="empty">Aucun objet détecté</td></tr>';
     return;
   }
 
@@ -127,7 +127,6 @@ function renderObjects(list) {
       <td>${num(item.x)}</td>
       <td>${num(item.y)}</td>
       <td>${num(item.a)}°</td>
-      <td class="muted">${num(item.seen_ago_s, 2)} s</td>
     </tr>`).join('');
 }
 
@@ -364,9 +363,10 @@ async function command(path, successMessage) {
 async function refresh() {
   try {
     const [status, objects] = await Promise.all([api('/status'), api('/objects')]);
-    renderObjects(objects.list || []);
+    const list = objects.objects || [];
+    renderObjects(list);
     renderStatus(status);
-    drawMap(objects.list || [], status);
+    drawMap(list, status);
     setConnected(true);
   } catch (error) {
     setConnected(false, error.message);

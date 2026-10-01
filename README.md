@@ -20,7 +20,7 @@ web** de pilotage intégrée.
 | 1 | **API web** Flask (JSON, CORS, aperçu JPEG, flux MJPEG, supervision) | `matvision/api.py`, `server.py` |
 | 2 | **Calibration automatique** des intrinsèques (damier, sans toucher au clavier) | `matvision/calibration.py`, `calibrate.py` |
 | 3 | **Module vision ArUco** : 4 tags de coin → repère table → objets | `matvision/aruco.py`, `matvision/table.py` |
-| 4 | Suivi multi-objets lissé et filtrage temporel | `matvision/tracker.py` |
+| 4 | Relevé des positions une entrée par tag détecté (mm / degrés) | `matvision/vision.py` |
 | 5 | **Interface web** de pilotage (flux live, plan de table, objets, calibration) | `matvision/templates/`, `matvision/static/` |
 | 6 | Générateur de tags, plan de table et damier + vérificateur de tags | `tools/generate_markers.py`, `tools/check_tags.py` |
 
@@ -42,8 +42,8 @@ flowchart LR
     TAB --> ROI["Masque ROI"]
     ROI --> AR2["Détection des objets"]
     AR2 --> MAP["Projection en mm<br/>via homographie"]
-    MAP --> TRK["ObjectTracker<br/>lissage + TTL"]
-    TRK --> API["API Flask"]
+    MAP --> OUT["Position en mm / degrés<br/>repère table"]
+    OUT --> API["API Flask"]
     API -->|JSON / JPEG / MJPEG| WEB["Interface web<br/>/ui"]
     API -->|JSON| LAN["Réseau local<br/>curl, robot, supervision"]
     CAL["AutoCalibrator<br/>(damier)"] -.->|intrinsèques| TAB
@@ -67,8 +67,8 @@ Mat-CDFR2027/
 │   ├── config.py                 # dataclasses de configuration
 │   ├── geometry.py               # Position, angles, homographie, ROI
 │   ├── table.py                  # repère table (homographie + solvePnP)
-│   ├── tracker.py                # suivi des objets
-│   ├── vision.py                 # moteur (boucle, modes, annotations)
+│   ├── overlay.py                # annotations de l'aperçu (tags, axes, HUD)
+│   ├── vision.py                 # moteur (boucle, modes, relevé des objets)
 │   ├── templates/
 │   │   └── index.html            # page de l'interface web
 │   └── static/
@@ -138,17 +138,11 @@ quel tag de sa plage de couleur :
 
 ```json
 "objects": [
-  { "id": 1, "label": "blue",   "size": 100.0, "angle_offset": 0.0 },
-  { "id": 2, "label": "blue",   "size": 100.0, "angle_offset": 0.0 },
-  { "id": 3, "label": "blue",   "size": 100.0, "angle_offset": 0.0 },
-  { "id": 4, "label": "blue",   "size": 100.0, "angle_offset": 0.0 },
-  { "id": 5, "label": "blue",   "size": 100.0, "angle_offset": 0.0 },
-  { "id": 6, "label": "yellow", "size": 100.0, "angle_offset": 0.0 },
-  { "id": 7, "label": "yellow", "size": 100.0, "angle_offset": 0.0 },
-  { "id": 8, "label": "yellow", "size": 100.0, "angle_offset": 0.0 },
-  { "id": 9, "label": "yellow", "size": 100.0, "angle_offset": 0.0 },
-  { "id": 10, "label": "yellow", "size": 100.0, "angle_offset": 0.0 },
-  { "id": 13, "label": "element", "size": 100.0, "angle_offset": 0.0 }
+  { "id": 1, "label": "blue", "angle_offset": 0.0, "offset": [0.0, 0.0] },
+  { "id": 2, "label": "blue", "angle_offset": 0.0, "offset": [0.0, 0.0] },
+  ...                                                               ,
+  { "id": 10, "label": "yellow", "angle_offset": 0.0, "offset": [0.0, 0.0] },
+  { "id": 13, "label": "element", "angle_offset": 0.0, "offset": [0.0, 0.0] }
 ]
 ```
 
@@ -156,15 +150,24 @@ quel tag de sa plage de couleur :
 |---|---|---|
 | `1` … `5` | `blue` | robots bleus (chaque robot porte l'un de ces tags) |
 | `6` … `10` | `yellow` | robots jaunes |
-| `13` | `element` | élément de jeu (un seul type : plusieurs exemplaires peuvent partager ce tag, le tracker les distingue par leur position) |
+| `13` | `element` | élément de jeu : boîte de 320 × 110 × 110 mm, un tag de 100 mm sur chacune de ses faces de 320 × 110 mm |
 
-Le suivi se fait par identifiant de tag, l'API regroupe par **libellé** : deux
-robots bleus portant les tags 1 et 3 apparaissent comme deux entrées sous la clé
-`blue`. C'est ce qui permettra d'exposer `/blue` et `/yellow`.
+La position renvoyée est toujours celle du **centre du tag**, exprimée dans le
+repère de la table. Pour l'élément de jeu, le centre du bloc est à l'aplomb du
+tag (l'écart de 55 mm entre le centre de la face et le centre du bloc est
+vertical) : la même formule s'applique donc aux robots et aux éléments.
 
-`angle_offset` corrige l'orientation si le « devant » de l'objet n'est pas dans
-l'axe `+x` du tag (cas fréquent pour un robot). `size` est informatif : la
-localisation plane (homographie) ne dépend pas de la taille du tag.
+Deux réglages optionnels par tag :
+
+* `angle_offset` — correction si le « devant » de l'objet n'est pas dans l'axe
+  `+x` du tag (cas fréquent pour un robot) ;
+* `offset` — décalage `[x, y]` en mm **dans le repère du tag**, pour viser un
+  point autre que le centre du tag. Il tourne avec l'orientation mesurée.
+  Défaut `[0, 0]` (centre du tag).
+
+L'API regroupe les relevés par **libellé** : un robot bleu en tag `1` et un autre
+en tag `3` apparaissent comme deux entrées sous la clé `blue`. C'est ce qui
+permettra d'exposer `/blue` et `/yellow`.
 
 > **Tags supportés.** Le dictionnaire `DICT_4X4_50` couvre les identifiants
 > **0 à 49** ; les identifiants `0` à `49` ont exactement le même motif dans
@@ -178,7 +181,7 @@ localisation plane (homographie) ne dépend pas de la taille du tag.
 ## 5. Générer les tags, le plan de table et le damier
 
 ```bash
-# Tous les tags de la configuration (coins 20-23, robots 1 et 6, élément 13)
+# Tous les tags de la configuration (coins 20-23, robots 1-10, élément 13)
 python tools/generate_markers.py --sheet
 
 # Idem en choisissant explicitement les identifiants
@@ -233,8 +236,8 @@ Si un tag imprimé ne se décode pas, `--identify` indique à quel identifiant e
 > **Mesuré sur ce projet :** les 15 tags configurés décodent correctement et
 > **aucune confusion n'a été observée sur 7 680 essais dégradés** (jusqu'à 34 px
 > de côté avec flou, bruit et JPEG de mauvaise qualité). Le mode d'échec est
-> toujours « tag absent », jamais « mauvais identifiant » — et un tag manqué une
-> image est absorbé par `detection.max_age_s`.
+> toujours « tag absent », jamais « mauvais identifiant » : un tag manqué sur une
+> image est simplement absent du relevé de cette image.
 
 ---
 
@@ -387,22 +390,26 @@ curl http://192.168.1.50:5000/objects
 
 ```json
 {
-  "objects": {
-    "blue": [
-      { "id": 1, "label": "blue", "x": 412.3, "y": -318.7, "z": 0.0, "a": 92.4,
-        "hits": 134, "missing": 0, "age_s": 4.51, "seen_ago_s": 0.001 }
-    ],
+  "count": 3,
+  "objects": [
+    { "id": 1,  "label": "blue",    "x": 412.3, "y": -318.7, "z": 0.0, "a": 92.4 },
+    { "id": 13, "label": "element", "x": 705.2, "y": -410.9, "z": 0.0, "a": 45.3 },
+    { "id": 13, "label": "element", "x": 710.1, "y": -398.2, "z": 0.0, "a": -44.6 }
+  ],
+  "by_label": {
+    "blue": [ { "id": 1, "label": "blue", "x": 412.3, "y": -318.7, "z": 0.0, "a": 92.4 } ],
     "element": [
-      { "id": 13, "label": "element", "x": -640.0, "y": 880.5, "z": 0.0, "a": 0.8 },
-      { "id": 13, "label": "element", "x":  705.2, "y": -410.9, "z": 0.0, "a": 45.3 }
+      { "id": 13, "label": "element", "x": 705.2, "y": -410.9, "z": 0.0, "a": 45.3 },
+      { "id": 13, "label": "element", "x": 710.1, "y": -398.2, "z": 0.0, "a": -44.6 }
     ]
-  },
-  "list": [ { "id": 1, "label": "blue", "x": 412.3, "y": -318.7, "z": 0.0, "a": 92.4 } ]
+  }
 }
 ```
 
-> Deux éléments de jeu partagent le tag `13` : ils apparaissent comme **deux
-> entrées distinctes** sous la clé `element`, distinguées par leur position.
+> Il n'y a **pas de suivi temporel** : `objects` est le relevé de la **dernière
+> image**. Un même élément de jeu vu par deux de ses tags apparaît donc **deux
+> fois**, à des positions très proches (il suffit à l'appelant de les moyenner ou
+> de ne garder que la première).
 
 ```bash
 # Pose caméra + qualité du repère table
@@ -427,11 +434,9 @@ curl http://192.168.1.50:5000/calibration/status
 |---|---|
 | Passer en 4K | `camera.width` = 3840, `camera.height` = 2160 |
 | Fluidité sur LattePanda | `camera.width/height` = 1280×720, `detection.draw` = false |
-| Positions plus lisses | `detection.smoothing` ↑ (0.4 → 0.7) |
-| Objets plus réactifs | `detection.smoothing` ↓ (0.4 → 0.15) |
-| Disparition plus rapide | `detection.max_age_s` ↓ (1.0 → 0.4) |
 | Marge de la ROI | `table.roi_margin_px` |
 | Robustesse du repère table | `detection.min_homography_inliers` ↑ |
+| Annotation de l'aperçu | `detection.draw` |
 
 ### Zone analysée (`table.roi_mode`)
 

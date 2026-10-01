@@ -8,7 +8,7 @@ le fichier. Les scripts offrent des surcharges en ligne de commande.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -114,12 +114,6 @@ class TableConfig:
             kwargs["markers"] = [CornerMarker.from_dict(m) for m in data["markers"]]
         return cls(**kwargs)
 
-    def marker_by_id(self, marker_id: int) -> CornerMarker | None:
-        for marker in self.markers:
-            if marker.id == marker_id:
-                return marker
-        return None
-
     @property
     def marker_ids(self) -> set[int]:
         return {m.id for m in self.markers}
@@ -127,15 +121,22 @@ class TableConfig:
 
 @dataclass
 class ObjectConfig:
-    """Objet mobile sur la table, identifié par un tag ArUco."""
+    """Objet de la table identifié par un tag ArUco (robot ou élément de jeu).
+
+    La position renvoyée est celle du centre du tag (ou du centre de l'objet
+    si ``offset`` est renseigné) dans le repère de la table.
+    """
 
     id: int
     label: str = ""
-    size: float = 100.0
     angle_offset: float = 0.0      # correction si le « devant » n'est pas l'axe +x du tag
+    offset: tuple[float, float] = (0.0, 0.0)   # décalage (mm) dans le repère du tag
 
     @classmethod
     def from_dict(cls, data: dict) -> "ObjectConfig":
+        data = dict(data)
+        if isinstance(data.get("offset"), (list, tuple)):
+            data["offset"] = tuple(float(v) for v in data["offset"])
         return cls(**_subset(cls, data))
 
 
@@ -143,13 +144,8 @@ class ObjectConfig:
 class DetectionConfig:
     """Réglages de la détection en continu."""
 
-    smoothing: float = 0.4         # 0 = pas de lissage, 1 = tout le nouveau (EMA)
-    max_age_s: float = 1.0         # durée de vie d'un objet non revu
-    match_distance_mm: float = 200.0
     min_homography_inliers: int = 12
-    stabilize_frames: int = 1      # nb de frames consécutives avant d'exposer les objets
-    draw: bool = True
-    draw_marker_axes: bool = False
+    draw: bool = True              # annote l'image d'aperçu
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "DetectionConfig":
@@ -225,9 +221,6 @@ class Config:
                 setattr(config, key, data[key])
         return config
 
-    def to_dict(self) -> dict:
-        return asdict(self)
-
     # ------------------------------------------------------------------ #
     def validate(self) -> list[str]:
         """Retourne la liste des avertissements / incohérences détectées."""
@@ -247,8 +240,6 @@ class Config:
             problems.append("table.roi_mode doit valoir 'table' ou 'markers'")
         if self.calibration.chessboard_cols < 3 or self.calibration.chessboard_rows < 3:
             problems.append("damier trop petit (>= 3x3 coins internes)")
-        if not 0.0 <= self.detection.smoothing <= 1.0:
-            problems.append("detection.smoothing doit être dans [0, 1]")
         return problems
 
     # ------------------------------------------------------------------ #
@@ -265,14 +256,3 @@ def load_config(path: str | Path | None = None) -> Config:
     if config_path.exists():
         data = json.loads(config_path.read_text(encoding="utf-8"))
     return Config.from_dict(data)
-
-
-def save_config(config: Config, path: str | Path) -> Path:
-    """Écrit la configuration au format JSON (création des dossiers incluse)."""
-    config_path = Path(path)
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(
-        json.dumps(config.to_dict(), indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    return config_path

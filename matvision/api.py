@@ -4,30 +4,8 @@ L'interface web est servie sur ``/`` (négociation de contenu : un navigateur
 reçoit la page HTML, ``curl`` reçoit le JSON de découverte) et sur ``/ui``.
 Le reste répond en JSON, sauf ``/preview`` (JPEG) et ``/stream`` (MJPEG).
 
-Routages principaux
--------------------
-===========================================  ==================================
-``GET  /``                                    interface web (HTML) ou JSON
-``GET  /ui``                                  interface web
-``GET  /api``                                 découverte JSON des points d'entrée
-``GET  /health``                              test de vie (supervision)
-``GET  /status``                              état complet (caméra, table, fps)
-``GET  /start`` ``POST /start``               démarre la détection
-``GET  /stop``  ``POST /stop``                arrête la détection
-``GET  /reset`` ``POST /reset``               réinitialise le suivi
-``GET  /objects``                             objets détectés (repère table)
-``GET  /objects/<clé>``                       objets d'un tag / d'un libellé
-``GET  /position``                            pose de la caméra (compatibilité)
-``GET  /table``                               géométrie de la table et repère
-``GET  /preview``                             dernière image annotée (JPEG)
-``GET  /stream``                              flux MJPEG temps réel
-``GET  /config``                              configuration effective
-``POST /calibration/start``                   lance la calibration automatique
-``GET  /calibration/status``                  progression de la calibration
-``POST /calibration/stop``                    annule la calibration
-``GET  /calibration/result``                  intrinsèques courantes
-``POST /snapshot``                            enregistre l'image courante
-===========================================  ==================================
+La liste des routes n'est écrite qu'à un seul endroit : la fonction
+``_discovery`` ci-dessous.
 """
 
 from __future__ import annotations
@@ -189,30 +167,18 @@ def create_app(engine: VisionEngine, *, cors: bool = True) -> Flask:
     # ------------------------------------------------------------------ #
     @app.get("/objects")
     def objects() -> Response:
-        payload = engine.objects()
-        label = request.args.get("label")
-        if label:
-            filtered = {k: v for k, v in payload["objects"].items() if k.lower() == label.lower()}
-            payload["objects"] = filtered
-            payload["list"] = [item for item in payload["list"] if str(item["label"]).lower() == label.lower()]
-        if request.args.get("flat") in {"1", "true", "yes"}:
-            payload.pop("objects", None)
-        return _json(payload)
+        return _json(engine.objects(label=request.args.get("label")))
 
     @app.get("/objects/<key>")
     def object_by_key(key: str) -> Response:
+        """Objets d'un libellé (``blue``, ``element``…) ou d'un identifiant de tag (``13``)."""
         payload = engine.objects()
-        # Clé possible : le libellé, ou l'identifiant du tag.
-        matches = payload["objects"].get(key)
-        if matches is None:
-            matches = [
-                item
-                for item in payload["list"]
-                if str(item["label"]) == key or str(item["id"]) == key
-            ]
+        matches = payload["by_label"].get(key) or [
+            item for item in payload["objects"] if str(item["id"]) == key
+        ]
         if not matches:
             return _json({"message": f"aucun objet pour {key!r}"}, 404)
-        return _json({"objects": matches})
+        return _json({"count": len(matches), "objects": matches})
 
     # ------------------------------------------------------------------ #
     # Aperçu

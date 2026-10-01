@@ -52,13 +52,8 @@
     ]
   },
   "detection": {
-    "smoothing": 0.4,
-    "max_age_s": 1.0,
-    "match_distance_mm": 200.0,
     "min_homography_inliers": 12,
-    "stabilize_frames": 2,
-    "draw": true,
-    "draw_marker_axes": false
+    "draw": true
   },
   "calibration": {
     "intrinsics_file": "data/camera_calibration.json",
@@ -75,17 +70,17 @@
     "flags": "CALIB_RATIONAL_MODEL"
   },
   "objects": [
-    { "id": 1, "label": "blue", "size": 100.0, "angle_offset": 0.0 },
-    { "id": 2, "label": "blue", "size": 100.0, "angle_offset": 0.0 },
-    { "id": 3, "label": "blue", "size": 100.0, "angle_offset": 0.0 },
-    { "id": 4, "label": "blue", "size": 100.0, "angle_offset": 0.0 },
-    { "id": 5, "label": "blue", "size": 100.0, "angle_offset": 0.0 },
-    { "id": 6, "label": "yellow", "size": 100.0, "angle_offset": 0.0 },
-    { "id": 7, "label": "yellow", "size": 100.0, "angle_offset": 0.0 },
-    { "id": 8, "label": "yellow", "size": 100.0, "angle_offset": 0.0 },
-    { "id": 9, "label": "yellow", "size": 100.0, "angle_offset": 0.0 },
-    { "id": 10, "label": "yellow", "size": 100.0, "angle_offset": 0.0 },
-    { "id": 13, "label": "element", "size": 100.0, "angle_offset": 0.0 }
+    { "id": 1, "label": "blue", "angle_offset": 0.0, "offset": [0.0, 0.0] },
+    { "id": 2, "label": "blue", "angle_offset": 0.0, "offset": [0.0, 0.0] },
+    { "id": 3, "label": "blue", "angle_offset": 0.0, "offset": [0.0, 0.0] },
+    { "id": 4, "label": "blue", "angle_offset": 0.0, "offset": [0.0, 0.0] },
+    { "id": 5, "label": "blue", "angle_offset": 0.0, "offset": [0.0, 0.0] },
+    { "id": 6, "label": "yellow", "angle_offset": 0.0, "offset": [0.0, 0.0] },
+    { "id": 7, "label": "yellow", "angle_offset": 0.0, "offset": [0.0, 0.0] },
+    { "id": 8, "label": "yellow", "angle_offset": 0.0, "offset": [0.0, 0.0] },
+    { "id": 9, "label": "yellow", "angle_offset": 0.0, "offset": [0.0, 0.0] },
+    { "id": 10, "label": "yellow", "angle_offset": 0.0, "offset": [0.0, 0.0] },
+    { "id": 13, "label": "element", "angle_offset": 0.0, "offset": [0.0, 0.0] }
   ],
   "api_host": "0.0.0.0",
   "api_port": 5000,

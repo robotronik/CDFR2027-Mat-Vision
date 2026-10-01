@@ -6,8 +6,8 @@ Ce package regroupe les briques du projet :
 * :mod:`matvision.calibration` — calibration automatique des intrinsèques.
 * :mod:`matvision.aruco`       — détection des tags ArUco.
 * :mod:`matvision.table`       — repère de la table à partir des 4 tags de coin.
-* :mod:`matvision.tracker`     — suivi des objets marqués sur la table.
-* :mod:`matvision.vision`      — moteur (boucle) qui assemble le tout.
+* :mod:`matvision.overlay`     — annotations de l'image d'aperçu.
+* :mod:`matvision.vision`      — moteur (boucle) qui relève les positions.
 * :mod:`matvision.api`         — API REST Flask pour le réseau local.
 """
 

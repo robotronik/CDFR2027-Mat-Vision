@@ -37,14 +37,14 @@ from matvision.calibration import (  # noqa: E402
     load_intrinsics,
     save_intrinsics,
 )
-from matvision.config import DEFAULT_CONFIG_PATH, Config, load_config  # noqa: E402
-from matvision.geometry import (  # noqa: E402
-    Position,
-    marker_corners_table,
-    normalize_angle_deg,
+from matvision.config import (  # noqa: E402
+    DEFAULT_CONFIG_PATH,
+    Config,
+    ObjectConfig,
+    load_config,
 )
+from matvision.geometry import marker_corners_table, normalize_angle_deg  # noqa: E402
 from matvision.table import localize_table, table_polygon_image  # noqa: E402
-from matvision.tracker import ObjectDetection, ObjectTracker  # noqa: E402
 from matvision.vision import VisionEngine  # noqa: E402
 
 # --------------------------------------------------------------------------- #
@@ -385,10 +385,10 @@ def test_intrinsics_resolution_mismatch() -> None:
             assert warning, "l'écart de résolution n'a pas été signalé"
             assert "1920x1080" in warning and f"{WIDTH}x{HEIGHT}" in warning, warning
 
-            deadline = time.time() + 25.0
-            while time.time() < deadline and engine.tracker.count < 3:
+            deadline = time.time() + 30.0
+            while time.time() < deadline and len(engine.objects()["objects"]) < 3:
                 time.sleep(0.05)
-            objects = engine.objects()["list"]
+            objects = engine.objects()["objects"]
             assert len(objects) == 3, objects
             for item in objects:
                 assert -1000.0 < item["x"] < 1000.0, item
@@ -402,34 +402,40 @@ def test_intrinsics_resolution_mismatch() -> None:
             engine.shutdown()
 
 
-def test_tracker() -> None:
-    tracker = ObjectTracker(smoothing=0.5, max_age_s=1.0, match_distance_mm=200.0)
-    now = 1000.0
-    tracker.update([ObjectDetection(1, "blue", Position(100.0, 200.0, 0.0, 10.0))], now)
-    tracker.update([ObjectDetection(1, "blue", Position(110.0, 210.0, 0.0, 20.0))], now + 0.1)
-    snapshot = tracker.snapshot()
-    assert "blue" in snapshot and len(snapshot["blue"]) == 1
-    item = snapshot["blue"][0]
-    assert 100.0 <= item["x"] <= 110.0, item
-    assert 10.0 <= item["a"] <= 20.0, item
+def test_object_offset() -> None:
+    """Le champ ``offset`` est exprimé dans le repère du tag et tourne avec lui."""
+    with tempfile.TemporaryDirectory() as tmp:
+        config = make_config(Path(tmp))
+        config.objects = [ObjectConfig(id=13, label="element", offset=(100.0, 0.0))]
+        frame = build_scene(config)
 
-    # Plusieurs éléments de jeu partagent le tag 13 -> deux pistes distinctes,
-    # distinguées par leur position.
-    tracker.clear()
-    tracker.update(
-        [
-            ObjectDetection(13, "element", Position(700.0, 700.0, 0.0, 0.0)),
-            ObjectDetection(13, "element", Position(-700.0, -900.0, 0.0, 0.0)),
-        ],
-        now + 0.2,
-    )
-    assert tracker.count == 2, tracker.count
-    assert len(tracker.snapshot()["element"]) == 2, tracker.snapshot()
+        engine = VisionEngine(config, display=False)
+        engine.camera = FakeCamera(frame)
+        engine.start()
+        try:
+            engine.start_detection()
+            deadline = time.time() + 25.0
+            while time.time() < deadline and not engine.objects()["objects"]:
+                time.sleep(0.05)
 
-    # Disparition après expiration
-    tracker.update([], now + 5.0)
-    assert tracker.count == 0, tracker.count
-    print("  ok  suivi : lissage, doublons de tag, expiration")
+            items = engine.objects()["objects"]
+            assert len(items) == 1, items
+            item = items[0]
+            assert item["id"] == 13 and item["label"] == "element", item
+
+            # Tag posé en (520, -700) avec un angle de 120° : un offset de
+            # (100, 0) mm dans le repère du tag devient (-50, +86.6) mm
+            # dans le repère de la table.
+            assert abs(item["a"] - 120.0) < 2.0, item
+            assert abs(item["x"] - (520.0 - 50.0)) < 8.0, item
+            assert abs(item["y"] - (-700.0 + 86.6)) < 8.0, item
+
+            print(
+                f"  ok  offset par tag : tag (520, -700) à 120° + offset (100, 0) mm "
+                f"-> centre ({item['x']:.0f}, {item['y']:.0f})"
+            )
+        finally:
+            engine.shutdown()
 
 
 def test_calibration_intrinsics_roundtrip() -> None:
@@ -529,7 +535,7 @@ def test_engine_and_api() -> None:
             deadline = time.time() + 30.0
             while time.time() < deadline:
                 status = engine.status()
-                if engine.tracker.count >= 3 and status["stats"]["fps"] > 0:
+                if len(engine.objects()["objects"]) >= 3 and status["stats"]["fps"] > 0:
                     break
                 time.sleep(0.05)
 
@@ -542,9 +548,9 @@ def test_engine_and_api() -> None:
             assert status["stats"]["fps"] > 0, status["stats"]
 
             objects = engine.objects()
-            labels = {item["label"] for item in objects["list"]}
+            labels = {item["label"] for item in objects["objects"]}
             assert labels >= {"blue", "yellow", "element"}, objects
-            for item in objects["list"]:
+            for item in objects["objects"]:
                 assert -1000.0 < item["x"] < 1000.0, item
                 assert -1500.0 < item["y"] < 1500.0, item
 
@@ -558,7 +564,8 @@ def test_engine_and_api() -> None:
             objects_response = client.get("/objects")
             assert objects_response.status_code == 200
             payload = objects_response.get_json()
-            assert "blue" in payload["objects"], payload
+            assert "blue" in payload["by_label"], payload
+            assert payload["count"] == len(payload["objects"]), payload
 
             single = client.get("/objects/1")
             assert single.status_code == 200 and single.get_json()["objects"], single.get_json()
@@ -585,7 +592,7 @@ def test_engine_and_api() -> None:
             assert "config" in calibration, calibration
 
             print(
-                f"  ok  moteur + API : {len(payload['list'])} objets suivis, "
+                f"  ok  moteur + API : {payload['count']} objets relevés, "
                 f"aperçu JPEG de {len(preview.data)} octets, fps {status['stats']['fps']}"
             )
         finally:
@@ -650,7 +657,7 @@ TESTS = [
     test_object_positions,
     test_roi_modes,
     test_tag_configuration,
-    test_tracker,
+    test_object_offset,
     test_calibration_intrinsics_roundtrip,
     test_intrinsics_resolution_mismatch,
     test_automatic_calibration,

@@ -18,7 +18,6 @@ from typing import Any
 import cv2
 import numpy as np
 
-from .camera import Camera, CameraError
 from .config import CalibrationConfig
 
 log = logging.getLogger(__name__)
@@ -73,14 +72,6 @@ class Intrinsics:
         )
 
     # -- utilitaires --------------------------------------------------- #
-    def undistort(self, frame: np.ndarray) -> np.ndarray:
-        """Corrige la distorsion d'une image (utile si la caméra est très courte focale)."""
-        return cv2.undistort(
-            frame,
-            np.asarray(self.camera_matrix, dtype=np.float64),
-            np.asarray(self.dist_coeffs, dtype=np.float64),
-        )
-
     @property
     def fx(self) -> float:
         return float(self.camera_matrix[0, 0])
@@ -243,10 +234,6 @@ class AutoCalibrator:
             self.state.status = "cancelled"
             self.state.finished_at = time.time()
             self.state.message = "session annulée"
-        return self.state
-
-    def reset(self) -> CalibrationState:
-        self.state = CalibrationState(target=int(self.config.target_frames))
         return self.state
 
     # ------------------------------------------------------------------ #
@@ -494,56 +481,3 @@ def _mean_error(
         expected = np.asarray(projected, dtype=np.float64).reshape(-1, 2)
         total += float(np.mean(np.linalg.norm(observed - expected, axis=1)))
     return total / max(1, len(object_points))
-
-
-# --------------------------------------------------------------------------- #
-# Session complète avec affichage (utilisée par ``calibrate.py``)
-# --------------------------------------------------------------------------- #
-def run_calibration_session(
-    camera_config,
-    calibration_config: CalibrationConfig,
-    *,
-    display: bool = True,
-    window_name: str = "Calibration caméra",
-) -> Intrinsics | None:
-    """Ouvre la caméra, collecte les vues puis sauvegarde la calibration."""
-    calibrator = AutoCalibrator(calibration_config)
-    calibrator.start()
-
-    try:
-        camera = Camera(camera_config).open()
-    except CameraError as exc:
-        log.error("%s", exc)
-        return None
-
-    try:
-        while calibrator.running:
-            ok, frame = camera.read()
-            if not ok or frame is None:
-                log.warning("Image non reçue, nouvelle tentative...")
-                continue
-
-            calibrator.process(frame)
-
-            if display:
-                overlay = calibrator.draw_overlay(frame.copy())
-                cv2.imshow(window_name, overlay)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    calibrator.cancel()
-                    break
-    except KeyboardInterrupt:
-        calibrator.cancel()
-    finally:
-        camera.close()
-        if display:
-            cv2.destroyAllWindows()
-
-    intrinsics = calibrator.state.intrinsics
-    if intrinsics is None:
-        log.error("Calibration non aboutie : %s", calibrator.state.message)
-        return None
-
-    output = calibration_config.intrinsics_file
-    path = save_intrinsics(output, intrinsics)
-    log.info("Calibration enregistrée dans %s", path)
-    return intrinsics
