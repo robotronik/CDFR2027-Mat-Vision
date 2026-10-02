@@ -13,6 +13,7 @@ const $ = (id) => document.getElementById(id);
 let tableInfo = null;
 let calibrationPolling = null;
 let lastObjects = [];
+let testMode = false;
 
 /* ------------------------------------------------------------------ utils */
 
@@ -58,6 +59,12 @@ function renderStatus(status) {
   $('mode-badge').textContent = status.mode || 'idle';
   $('mode-badge').dataset.mode = status.mode || 'idle';
 
+  testMode = !!status.test_mode;
+  $('test-badge').hidden = !testMode;
+  $('map-title').textContent = testMode ? 'Vue test (repère image)' : 'Plan de la table';
+  $('th-x').textContent = testMode ? 'x (px)' : 'x (mm)';
+  $('th-y').textContent = testMode ? 'y (px)' : 'y (mm)';
+
   const camera = status.camera || {};
   $('st-camera').textContent = camera.opened
     ? `${camera.device} · ${camera.width}×${camera.height}`
@@ -74,6 +81,10 @@ function renderStatus(status) {
     ? `verrouillé (${(table.used_ids || []).join(', ')})`
     : (table.reason || 'non verrouillé');
   $('st-table').className = className(table.ok);
+  if (testMode) {
+    $('st-table').textContent = 'non utilisé (mode test)';
+    $('st-table').className = className(true);
+  }
 
   $('st-inliers').textContent = `${table.inliers || 0} / ${table.points || 0}`;
   $('st-residual').textContent = table.residual_mm === undefined
@@ -113,16 +124,18 @@ function renderStatus(status) {
 function renderObjects(list) {
   lastObjects = list;
   const body = $('objects-body');
-  $('objects-count').textContent = `${list.length} objet${list.length > 1 ? 's' : ''}`;
+  const word = testMode ? 'tag' : 'objet';
+  $('objects-count').textContent = `${list.length} ${word}${list.length > 1 ? 's' : ''}`;
 
   if (!list.length) {
-    body.innerHTML = '<tr><td colspan="5" class="empty">Aucun objet détecté</td></tr>';
+    body.innerHTML = `<tr><td colspan="5" class="empty">Aucun ${word} détecté</td></tr>`;
     return;
   }
 
   body.innerHTML = list.map((item) => `
     <tr>
-      <td>${escapeHtml(item.label)}</td>
+      <td>${escapeHtml(item.label)}${item.declared === false
+        ? ' <span class="muted small">(non déclaré)</span>' : ''}</td>
       <td><span class="tag-chip">${item.id}</span></td>
       <td>${num(item.x)}</td>
       <td>${num(item.y)}</td>
@@ -141,6 +154,7 @@ function escapeHtml(value) {
 function drawMap(objects, status) {
   const canvas = $('map');
   if (!tableInfo) return;
+  const mode = !!(status && status.test_mode);
 
   const ratio = window.devicePixelRatio || 1;
   const width = canvas.clientWidth;
@@ -155,48 +169,60 @@ function drawMap(objects, status) {
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.clearRect(0, 0, width, height);
 
-  const tableWidth = tableInfo.width_mm || 2000;
-  const tableHeight = tableInfo.height_mm || 3000;
+  // En mode test il n'y a pas de repère table : on représente l'image en pixels.
+  const fieldWidth = mode
+    ? ((status.camera && status.camera.width) || 1920)
+    : (tableInfo.width_mm || 2000);
+  const fieldHeight = mode
+    ? ((status.camera && status.camera.height) || 1080)
+    : (tableInfo.height_mm || 3000);
   const padding = 12;
-  const scale = Math.min((width - 2 * padding) / tableWidth, (height - 2 * padding) / tableHeight);
+  const scale = Math.min((width - 2 * padding) / fieldWidth, (height - 2 * padding) / fieldHeight);
   const centreX = width / 2;
   const centreY = height / 2;
 
-  // Repère table (mm) -> pixels écran (+y vers le haut)
-  const sx = (x) => centreX + x * scale;
-  const sy = (y) => centreY - y * scale;
+  // Repère table (mm, +y vers le haut) ou repère image (px, +y vers le bas)
+  const sx = (x) => (mode ? centreX + (x - fieldWidth / 2) * scale : centreX + x * scale);
+  const sy = (y) => (mode ? centreY + (y - fieldHeight / 2) * scale : centreY - y * scale);
 
-  // Tapis
+  // Fond / tapis
   ctx.fillStyle = '#0f1620';
   ctx.strokeStyle = '#2a3240';
   ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.rect(sx(-tableWidth / 2), sy(tableHeight / 2), tableWidth * scale, tableHeight * scale);
+  ctx.rect(sx(mode ? 0 : -fieldWidth / 2), sy(mode ? 0 : fieldHeight / 2),
+    fieldWidth * scale, fieldHeight * scale);
   ctx.fill();
   ctx.stroke();
 
-  // Axes
-  drawArrow(ctx, sx(0), sy(0), sx(500), sy(0), '#f85149');
-  drawArrow(ctx, sx(0), sy(0), sx(0), sy(500), '#58a6ff');
+  if (!mode) {
+    // Axes
+    drawArrow(ctx, sx(0), sy(0), sx(500), sy(0), '#f85149');
+    drawArrow(ctx, sx(0), sy(0), sx(0), sy(500), '#58a6ff');
 
-  // Tags de coin
-  ctx.fillStyle = 'rgba(88, 166, 255, 0.85)';
-  ctx.font = '9px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  for (const marker of tableInfo.markers || []) {
-    const side = Math.max(5, (marker.size || 100) * scale);
-    ctx.fillRect(sx(marker.x) - side / 2, sy(marker.y) - side / 2, side, side);
-    ctx.fillStyle = 'rgba(139, 151, 168, 0.9)';
-    ctx.fillText(String(marker.id), sx(marker.x), sy(marker.y) - side / 2 - 7);
+    // Tags de coin
     ctx.fillStyle = 'rgba(88, 166, 255, 0.85)';
+    ctx.font = '9px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const marker of tableInfo.markers || []) {
+      const side = Math.max(5, (marker.size || 100) * scale);
+      ctx.fillRect(sx(marker.x) - side / 2, sy(marker.y) - side / 2, side, side);
+      ctx.fillStyle = 'rgba(139, 151, 168, 0.9)';
+      ctx.fillText(String(marker.id), sx(marker.x), sy(marker.y) - side / 2 - 7);
+      ctx.fillStyle = 'rgba(88, 166, 255, 0.85)';
+    }
   }
 
-  // Objets suivis
-  const locked = status && status.table && status.table.ok;
+  // Tags / objets détectés
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const locked = mode || (status && status.table && status.table.ok);
   for (const item of objects) {
     const px = sx(item.x);
     const py = sy(item.y);
+
+    if (mode && item.box_mm) drawBoxOutline(ctx, item, px, py);
 
     // trait d'orientation
     const angle = (item.a || 0) * Math.PI / 180;
@@ -204,10 +230,10 @@ function drawMap(objects, status) {
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(px, py);
-    ctx.lineTo(px + Math.cos(angle) * 22, py - Math.sin(angle) * 22);
+    ctx.lineTo(px + Math.cos(angle) * 22, py + (mode ? 1 : -1) * Math.sin(angle) * 22);
     ctx.stroke();
 
-    ctx.fillStyle = '#3fb950';
+    ctx.fillStyle = mode && item.declared === false ? '#8b97a8' : '#3fb950';
     ctx.beginPath();
     ctx.arc(px, py, 6.5, 0, Math.PI * 2);
     ctx.fill();
@@ -217,9 +243,42 @@ function drawMap(objects, status) {
     ctx.fillText(String(item.label ?? item.id), px, py - 14);
   }
 
-  $('map-scale').textContent = locked
-    ? `échelle ${(scale * 100).toFixed(2)} px / 100 mm`
-    : 'repère non verrouillé';
+  $('map-scale').textContent = mode
+    ? `repère image ${fieldWidth}×${fieldHeight} px`
+    : (locked ? `échelle ${(scale * 100).toFixed(2)} px / 100 mm` : 'repère non verrouillé');
+}
+
+/**
+ * Contour 320×110 mm (face portant le tag) d'un élément de jeu, en mode test.
+ * L'angle suit le repère image (+y vers le bas) ; on inverse donc l'axe local y.
+ */
+function drawBoxOutline(ctx, item, px, py) {
+  const length = item.box_mm[0];
+  const width = item.box_mm[1];
+  const k = item.px_per_mm || 0;
+  if (!k) return;
+
+  const halfLength = (length / 2) * k;
+  const halfWidth = (width / 2) * k;
+  const angle = (item.a || 0) * Math.PI / 180;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const corners = [
+    [-halfLength, halfWidth],
+    [halfLength, halfWidth],
+    [halfLength, -halfWidth],
+    [-halfLength, -halfWidth],
+  ].map(([lx, ly]) => [px + lx * cos + ly * sin, py + lx * sin - ly * cos]);
+
+  ctx.strokeStyle = 'rgba(255, 160, 0, 0.9)';
+  ctx.lineWidth = 1.8;
+  ctx.beginPath();
+  ctx.moveTo(corners[0][0], corners[0][1]);
+  for (let index = 1; index < corners.length; index += 1) {
+    ctx.lineTo(corners[index][0], corners[index][1]);
+  }
+  ctx.closePath();
+  ctx.stroke();
 }
 
 function drawArrow(ctx, fromX, fromY, toX, toY, color) {

@@ -142,7 +142,9 @@ quel tag de sa plage de couleur :
   { "id": 2, "label": "blue", "angle_offset": 0.0, "offset": [0.0, 0.0] },
   ...                                                               ,
   { "id": 10, "label": "yellow", "angle_offset": 0.0, "offset": [0.0, 0.0] },
-  { "id": 13, "label": "element", "angle_offset": 0.0, "offset": [0.0, 0.0] }
+  { "id": 13, "label": "element", "angle_offset": 0.0, "offset": [0.0, 0.0],
+    "size": 100.0,
+    "box": { "length_mm": 320.0, "width_mm": 110.0, "height_mm": 110.0 } }
 ]
 ```
 
@@ -164,6 +166,13 @@ Deux réglages optionnels par tag :
 * `offset` — décalage `[x, y]` en mm **dans le repère du tag**, pour viser un
   point autre que le centre du tag. Il tourne avec l'orientation mesurée.
   Défaut `[0, 0]` (centre du tag).
+
+Deux précisions géométriques, utiles au **mode test** (§7.1) :
+
+* `size` — côté du tag imprimé (mm, défaut `100`) : sert d'échelle apparente ;
+* `box` — dimensions (`length_mm` selon `+x` du tag, `width_mm` selon `+y`,
+  `height_mm` en profondeur) de la boîte d'un élément de jeu, pour le tracé de
+  ses arêtes.
 
 L'API regroupe les relevés par **libellé** : un robot bleu en tag `1` et un autre
 en tag `3` apparaissent comme deux entrées sous la clé `blue`. C'est ce qui
@@ -317,10 +326,37 @@ python server.py                  # API sur 0.0.0.0:5000, détection à la deman
 python server.py --autostart      # détection lancée immédiatement
 python server.py --display        # + fenêtre locale d'aperçu
 python server.py --device 1 --width 3840 --height 2160
+python server.py --test           # mode test : détection sans tags de coin
 ```
 
 L'API démarre même si la caméra est absente : le moteur retente l'ouverture
 toutes les 2 s et `/health` renvoie alors `ok: false`.
+
+### 7.1 Mode test (sans tags de coin)
+
+`--test` sert à **vérifier la détection des tags en général**, sans dépendre du
+repère table (donc sans les 4 tags de coin 20-23). Le moteur :
+
+* analyse toute l'image (pas de ROI) et relève **tous** les tags du dictionnaire —
+  les tags non déclarés apparaissent aussi, marqués « non déclaré » ;
+* ne construit pas d'homographie : les positions sont données en **pixels**
+  (`x`, `y` = centre du tag, `a` = angle dans l'image, `+y` vers le bas), avec la
+  taille apparente (`size_px`, `px_per_mm`) → `"frame": "image"` dans
+  `/objects` et `"test_mode": true` dans `/status` ;
+* pour un **élément de jeu** (tag 13), trace les **arêtes de sa boîte**
+  (320 × 110 × 110 mm, tag centré sur une face 320 × 110) dans l'aperçu : la face
+  portant le tag est projetée via l'homographie locale du tag, et le volume
+  complet l'est via `solvePnP` si la calibration intrinsèque correspond à la
+  résolution. `--test` lance la détection automatiquement.
+
+L'interface web signale le mode (« MODE TEST ») et bascule la vue de droite en
+**repère image** : les tags détectés y sont dessinés à leur position en pixels,
+avec le contour de la boîte pour l'élément de jeu.
+
+```bash
+python server.py --test
+curl "http://<ip>:5000/objects"      # { "frame": "image", "test_mode": true, ... }
+```
 
 ### 7.1 Interface web
 

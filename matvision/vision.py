@@ -14,6 +14,7 @@ import logging
 import math
 import threading
 import time
+from dataclasses import asdict
 from enum import Enum
 from typing import Any
 
@@ -24,8 +25,8 @@ from .aruco import ArucoDetector, marker_center
 from .calibration import AutoCalibrator, Intrinsics, load_intrinsics, save_intrinsics
 from .camera import Camera, CameraError
 from .config import Config, ObjectConfig
-from .geometry import Position, build_roi_mask
-from .overlay import annotate, draw_hud
+from .geometry import Position, build_roi_mask, normalize_angle_deg
+from .overlay import annotate, annotate_test, draw_hud
 from .table import TableLocalization, localize_table, table_polygon_image
 
 log = logging.getLogger(__name__)
@@ -40,11 +41,18 @@ class VisionMode(str, Enum):
 
 
 class VisionEngine:
-    """Boucle d'acquisition + état partagé."""
+    """Boucle d'acquisition + état partagé.
 
-    def __init__(self, config: Config, *, display: bool = False) -> None:
+    En mode test (``test_mode=True``) le repère table n'est pas utilisé : tous
+    les tags de l'image sont relevés en pixels, sans exiger les tags de coin.
+    """
+
+    def __init__(
+        self, config: Config, *, display: bool = False, test_mode: bool = False
+    ) -> None:
         self.config = config
         self.display = bool(display)
+        self.test_mode = bool(test_mode)
 
         self.detector = ArucoDetector(
             config.aruco.get("dictionary", "DICT_4X4_50"),
@@ -180,6 +188,7 @@ class VisionEngine:
         return {
             "running": self.running,
             "mode": mode.value,
+            "test_mode": self.test_mode,
             "camera": self.camera.info(),
             "error": error,
             "objects_count": objects,
@@ -204,7 +213,13 @@ class VisionEngine:
         by_label: dict[str, list[dict]] = {}
         for item in items:
             by_label.setdefault(item["label"], []).append(item)
-        return {"count": len(items), "objects": items, "by_label": by_label}
+        return {
+            "count": len(items),
+            "objects": items,
+            "by_label": by_label,
+            "test_mode": self.test_mode,
+            "frame": "image" if self.test_mode else "table",
+        }
 
     def camera_position(self) -> dict:
         with self._lock:
@@ -229,12 +244,14 @@ class VisionEngine:
         return {
             "width_mm": table.width_mm,
             "height_mm": table.height_mm,
+            "test_mode": self.test_mode,
             "markers": [
                 {"id": m.id, "x": m.x, "y": m.y, "a": m.a, "size": m.size} for m in table.markers
             ],
             "objects": [
                 {"id": o.id, "label": o.label or str(o.id),
-                 "angle_offset": o.angle_offset, "offset": list(o.offset)}
+                 "angle_offset": o.angle_offset, "offset": list(o.offset),
+                 "size": o.size, "box": asdict(o.box) if o.box else None}
                 for o in self.config.objects
             ],
             "localization": localization.to_dict(),
@@ -340,7 +357,7 @@ class VisionEngine:
             return calibrator.draw_overlay(frame.copy()) if self.config.detection.draw else frame
 
         if mode is VisionMode.DETECT:
-            return self._detect(frame)
+            return self._detect_test(frame) if self.test_mode else self._detect(frame)
 
         if self.config.detection.draw:
             canvas = frame.copy()
@@ -400,6 +417,80 @@ class VisionEngine:
         annotate(canvas, corner_markers, object_markers, localization, objects)
         draw_hud(canvas, self._hud_lines())
         return canvas
+
+    def _detect_test(self, frame: np.ndarray) -> np.ndarray:
+        """Mode test : tous les tags de l'image, sans repère table.
+
+        Les tags de coin ne sont pas requis. Les positions sont exprimées en
+        pixels (repère image, ``+y`` vers le bas) et non en millimètres.
+        """
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        found, _rejected = self.detector.detect_by_id(gray, gray=True)
+
+        objects = [self._locate_test(marker_id, corners) for marker_id, corners in found.items()]
+
+        with self._lock:
+            self._localization = TableLocalization(
+                used_ids=sorted(found), reason="mode test : repère table non utilisé"
+            )
+            self._objects = objects
+            self._stats["detections"] = len(objects)
+
+        if not self.config.detection.draw:
+            return frame
+
+        canvas = frame.copy()
+        annotate_test(canvas, found, objects, self._intrinsics)
+        draw_hud(canvas, self._hud_lines())
+        return canvas
+
+    def _locate_test(self, marker_id: int, corners: np.ndarray) -> dict:
+        """Relevé d'un tag en pixels : centre, angle image, taille apparente.
+
+        L'angle suit la convention image (``+x`` vers la droite, ``+y`` vers le
+        bas), et non celle du repère table.
+        """
+        points = np.asarray(corners, dtype=np.float64).reshape(4, 2)
+        center = marker_center(corners)
+        edges = np.array([points[1] - points[0], points[2] - points[3]])
+        mean_edge = edges.mean(axis=0)
+        angle = normalize_angle_deg(float(np.degrees(np.arctan2(mean_edge[1], mean_edge[0]))))
+
+        sides = np.linalg.norm(
+            [
+                points[1] - points[0],
+                points[2] - points[1],
+                points[3] - points[2],
+                points[0] - points[3],
+            ],
+            axis=1,
+        )
+        size_px = float(np.mean(sides))
+
+        object_config = self.objects_config.get(marker_id)
+        size_mm = object_config.size if object_config else 100.0
+        px_per_mm = size_px / size_mm if size_mm else 0.0
+
+        item = Position(x=float(center[0]), y=float(center[1]), z=0.0, a=angle).to_dict()
+        item.update(
+            {
+                "id": marker_id,
+                "label": (
+                    object_config.label
+                    if object_config is not None and object_config.label
+                    else str(marker_id)
+                ),
+                "declared": object_config is not None,
+                "angle_image": True,
+                "size_mm": round(float(size_mm), 2),
+                "size_px": round(size_px, 2),
+                "px_per_mm": round(px_per_mm, 4),
+            }
+        )
+        if object_config is not None and object_config.box is not None:
+            box = object_config.box
+            item["box_mm"] = [box.length_mm, box.width_mm, box.height_mm]
+        return item
 
     def _locate(
         self, config: ObjectConfig, corners: np.ndarray, localization: TableLocalization
@@ -475,10 +566,16 @@ class VisionEngine:
             localization = self._localization
             error = self._error
 
-        lines = [
-            f"mode: {mode.value}   fps: {stats['fps']:.1f}   frames: {stats['frames']}",
-            f"objets: {stats['detections']}   inliers: {localization.inliers}/{localization.total_points}",
-        ]
+        if self.test_mode:
+            lines = [
+                f"MODE TEST (repère image)   fps: {stats['fps']:.1f}   frames: {stats['frames']}",
+                f"tags détectés: {stats['detections']}",
+            ]
+        else:
+            lines = [
+                f"mode: {mode.value}   fps: {stats['fps']:.1f}   frames: {stats['frames']}",
+                f"objets: {stats['detections']}   inliers: {localization.inliers}/{localization.total_points}",
+            ]
         if localization.camera_position is not None:
             camera = localization.camera_position
             lines.append(

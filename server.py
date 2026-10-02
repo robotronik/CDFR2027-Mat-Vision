@@ -11,6 +11,10 @@ Caméra et port personnalisés, avec fenêtre locale ::
 
     python server.py --device 1 --port 5000 --display
 
+Mode test — vérifier la détection des tags sans les tags de coin de la table ::
+
+    python server.py --test
+
 Depuis un autre poste du réseau local ::
 
     curl http://<ip-lattepanda>:5000/objects
@@ -58,6 +62,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=None)
     parser.add_argument("--height", type=int, default=None)
     parser.add_argument("--autostart", action="store_true", help="Démarre la détection sans attendre /start.")
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help=(
+            "Mode test : relève tous les tags en pixels, sans exiger les tags de coin "
+            "de la table (détection lancée automatiquement)."
+        ),
+    )
     parser.add_argument("--display", action="store_true", help="Affiche la fenêtre de prévisualisation locale.")
     parser.add_argument("--no-cors", action="store_true", help="Désactive l'en-tête CORS.")
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -89,9 +101,15 @@ def main(argv: list[str] | None = None) -> int:
     for warning in config.validate():
         log.warning("configuration : %s", warning)
 
-    engine = VisionEngine(config, display=args.display)
+    if args.test:
+        log.info(
+            "Mode test : repère table ignoré, tous les tags sont relevés en pixels "
+            "(les tags de coin ne sont pas nécessaires)."
+        )
+
+    engine = VisionEngine(config, display=args.display, test_mode=args.test)
     engine.start()
-    if args.autostart:
+    if args.autostart or args.test:
         engine.start_detection()
 
     stopping = threading.Event()

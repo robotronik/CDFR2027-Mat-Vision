@@ -109,6 +109,14 @@ body {
   color: var(--warn);
 }
 
+.badge-test {
+  background: rgba(210, 153, 34, 0.18);
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.badge-test[hidden] { display: none; }
+
 /* ---------------------------------------------------------------- Layout */
 .layout {
   flex: 1;

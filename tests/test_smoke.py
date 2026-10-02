@@ -671,6 +671,84 @@ def test_web_interface() -> None:
             engine.shutdown()
 
 
+def build_object_scene(
+    config: Config, marker_id: int = 13, x: float = 0.0, y: float = 0.0, angle: float = 0.0
+) -> np.ndarray:
+    """Rend uniquement un tag objet — aucun tag de coin (scène du mode test)."""
+    dictionary = cv2.aruco.getPredefinedDictionary(
+        getattr(cv2.aruco, config.aruco["dictionary"])
+    )
+    rotation, translation = look_at(CAMERA_EYE, CAMERA_TARGET)
+    canvas = np.full((HEIGHT, WIDTH), 255, dtype=np.uint8)
+    render_marker(canvas, dictionary, marker_id, 100.0, x, y, angle, rotation, translation)
+    return cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGR)
+
+
+def test_test_mode() -> None:
+    """Mode test : tous les tags relevés en pixels, sans tags de coin.
+
+    Le repère table n'est pas construit ; les tags de coin présents dans
+    l'image sont relevés comme les autres, et l'élément de jeu (tag 13) expose
+    la géométrie de sa boîte (320x110x110 mm).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        config = make_config(Path(tmp))
+        engine = VisionEngine(config, display=False, test_mode=True)
+        engine.camera = FakeCamera(build_scene(config))
+        engine.start()
+        try:
+            engine.start_detection()
+            deadline = time.time() + 25.0
+            while time.time() < deadline and (
+                len(engine.objects()["objects"]) < 7
+                or engine.status()["stats"]["frames"] < 1
+            ):
+                time.sleep(0.05)
+
+            payload = engine.objects()
+            assert payload["test_mode"] is True, payload
+            assert payload["frame"] == "image", payload
+            items = {item["id"]: item for item in payload["objects"]}
+            assert {1, 6, 13, 20, 21, 22, 23} <= set(items), items
+
+            for item in items.values():
+                assert 0.0 <= item["x"] <= WIDTH and 0.0 <= item["y"] <= HEIGHT, item
+
+            assert items[13]["declared"] is True and items[13]["label"] == "element", items[13]
+            assert items[13]["box_mm"] == [320.0, 110.0, 110.0], items[13]
+            assert items[13]["size_px"] > 10.0, items[13]
+            assert items[1]["declared"] is True and "box_mm" not in items[1], items[1]
+            assert items[20]["declared"] is False, items[20]
+
+            assert engine.status()["test_mode"] is True, engine.status()
+            assert engine.preview_jpeg() is not None
+
+            # Sans tags de coin ET sans intrinsèques : la détection et le tracé
+            # de la face de la boîte doivent fonctionner malgré tout.
+            plain = load_config(DEFAULT_CONFIG_PATH)
+            plain.camera.width, plain.camera.height = WIDTH, HEIGHT
+            plain.calibration.intrinsics_file = str(Path(tmp) / "absent.json")
+            blind = VisionEngine(plain, display=False, test_mode=True)
+            blind.camera = FakeCamera(build_object_scene(plain))
+            blind.start()
+            try:
+                blind.start_detection()
+                deadline = time.time() + 20.0
+                while time.time() < deadline and not blind.objects()["objects"]:
+                    time.sleep(0.05)
+                solo = blind.objects()["objects"]
+                assert solo and solo[0]["id"] == 13, solo
+            finally:
+                blind.shutdown()
+
+            print(
+                f"  ok  mode test : {len(items)} tags relevés en pixels, "
+                f"sans tags de coin (aperçu JPEG produit)"
+            )
+        finally:
+            engine.shutdown()
+
+
 # --------------------------------------------------------------------------- #
 TESTS = [
     test_geometry_units,
@@ -685,6 +763,7 @@ TESTS = [
     test_engine_and_api,
     test_shutdown_route,
     test_web_interface,
+    test_test_mode,
 ]
 
 

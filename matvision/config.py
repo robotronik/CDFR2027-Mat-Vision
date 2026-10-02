@@ -120,24 +120,51 @@ class TableConfig:
 
 
 @dataclass
+class BoxConfig:
+    """Boîte d'un élément de jeu, décrite autour de son tag.
+
+    Le tag est centré sur une face ``length_mm × width_mm`` (``length_mm`` dans
+    l'axe ``+x`` local du tag, ``width_mm`` dans son axe ``+y``) ; ``height_mm``
+    est la profondeur de la boîte, perpendiculaire à cette face. Sert au tracé
+    des arêtes dans l'aperçu (mode ``--test``).
+    """
+
+    length_mm: float = 320.0
+    width_mm: float = 110.0
+    height_mm: float = 110.0
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "BoxConfig":
+        return cls(**_subset(cls, data))
+
+
+@dataclass
 class ObjectConfig:
     """Objet de la table identifié par un tag ArUco (robot ou élément de jeu).
 
     La position renvoyée est celle du centre du tag (ou du centre de l'objet
-    si ``offset`` est renseigné) dans le repère de la table.
+    si ``offset`` est renseigné) dans le repère de la table. ``size`` est la
+    taille physique du tag (mm) : elle sert d'échelle apparente en mode test et
+    au tracé de la boîte (``box``).
     """
 
     id: int
     label: str = ""
     angle_offset: float = 0.0      # correction si le « devant » n'est pas l'axe +x du tag
     offset: tuple[float, float] = (0.0, 0.0)   # décalage (mm) dans le repère du tag
+    size: float = 100.0            # côté du tag imprimé (mm)
+    box: BoxConfig | None = None   # géométrie de la boîte (éléments de jeu)
 
     @classmethod
     def from_dict(cls, data: dict) -> "ObjectConfig":
         data = dict(data)
         if isinstance(data.get("offset"), (list, tuple)):
             data["offset"] = tuple(float(v) for v in data["offset"])
-        return cls(**_subset(cls, data))
+        box = data.pop("box", None)
+        config = cls(**_subset(cls, data))
+        if box:
+            config.box = BoxConfig.from_dict(box)
+        return config
 
 
 @dataclass
