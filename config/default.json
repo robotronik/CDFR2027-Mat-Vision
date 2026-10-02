@@ -7,7 +7,7 @@
     "fps": 30,
     "fourcc": "MJPG",
     "buffer_size": 1,
-    "warmup_frames": 30,
+    "warmup_frames": 5,
     "auto_exposure": true,
     "auto_white_balance": true
   },

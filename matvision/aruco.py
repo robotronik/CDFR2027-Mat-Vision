@@ -8,6 +8,7 @@ quelques utilitaires géométriques sur les coins détectés.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Iterable, Sequence
 
 import cv2
@@ -128,11 +129,21 @@ class ArucoDetector:
         if mask is not None:
             working = cv2.bitwise_and(gray_image, gray_image, mask=mask)
 
+        started = time.perf_counter()
         if self._detector is not None:
             corners, ids, rejected = self._detector.detectMarkers(working)
         else:  # OpenCV < 4.7
             corners, ids, rejected = cv2.aruco.detectMarkers(
                 working, self.dictionary, parameters=self.parameters
+            )
+
+        if log.isEnabledFor(logging.DEBUG):
+            count = 0 if ids is None else int(len(np.asarray(ids).flatten()))
+            log.debug(
+                "detectMarkers : %d tag(s) en %.1f ms (masque=%s)",
+                count,
+                (time.perf_counter() - started) * 1000.0,
+                "oui" if mask is not None else "non",
             )
         return list(corners), ids, list(rejected)
 

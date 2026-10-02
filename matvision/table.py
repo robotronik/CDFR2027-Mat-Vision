@@ -120,6 +120,12 @@ def localize_table(
         table_points.append(marker_corners_table(marker.x, marker.y, marker.a, marker.size))
 
     if len(used_ids) < MIN_MARKERS:
+        log.debug(
+            "localize_table : %d tag(s) de coin sur %d (%d minimum) — repère non construit",
+            len(used_ids),
+            len(table.markers),
+            MIN_MARKERS,
+        )
         return TableLocalization(
             used_ids=used_ids,
             reason=(
@@ -133,6 +139,7 @@ def localize_table(
 
     homography, mask = cv2.findHomography(src, dst, cv2.RANSAC, ransac_threshold_mm, maxIters=5000)
     if homography is None:
+        log.debug("localize_table : homographie non calculable (%d tags)", len(used_ids))
         return TableLocalization(used_ids=used_ids, reason="homographie non calculable")
 
     inliers = int(mask.sum()) if mask is not None else int(src.shape[0])
@@ -161,7 +168,20 @@ def localize_table(
             result.camera_tvec = tvec
             result.pose_error_px = error
             result.camera_position = _camera_position_in_table(rvec, tvec)
+        else:
+            log.debug("Pose caméra indisponible : solvePnP sans solution")
+    else:
+        log.debug("Pose caméra non calculée : aucune calibration intrinsèque chargée")
 
+    log.debug(
+        "localize_table : ok=%s, %d/%d inliers, résidu %.2f mm, tags=%s%s",
+        result.ok,
+        result.inliers,
+        result.total_points,
+        result.residual_mm,
+        result.used_ids,
+        f" — {result.reason}" if result.reason else "",
+    )
     return result
 
 

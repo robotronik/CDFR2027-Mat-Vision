@@ -8,6 +8,7 @@ le fichier. Les scripts offrent des surcharges en ligne de commande.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,8 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_DIR.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "default.json"
 DATA_DIR = PROJECT_ROOT / "data"
+
+log = logging.getLogger(__name__)
 
 #: Paramètres du détecteur ArUco (noms d'attributs ``cv2.aruco.DetectorParameters``).
 DEFAULT_ARUCO_PARAMS: dict[str, Any] = {
@@ -282,4 +285,15 @@ def load_config(path: str | Path | None = None) -> Config:
     data: dict = {}
     if config_path.exists():
         data = json.loads(config_path.read_text(encoding="utf-8"))
-    return Config.from_dict(data)
+        log.debug("Configuration chargée depuis %s", config_path)
+    else:
+        log.debug("Configuration absente (%s) : valeurs par défaut", config_path)
+    config = Config.from_dict(data)
+    log.debug(
+        "Configuration effective : %d objets, %d tags de coin, ROI=%s, dessin=%s",
+        len(config.objects),
+        len(config.table.markers),
+        config.table.roi_mode,
+        "oui" if config.detection.draw else "non",
+    )
+    return config

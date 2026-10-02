@@ -327,6 +327,7 @@ python server.py --autostart      # détection lancée immédiatement
 python server.py --display        # + fenêtre locale d'aperçu
 python server.py --device 1 --width 3840 --height 2160
 python server.py --test           # mode test : détection sans tags de coin
+python server.py --match          # mode match : API JSON seule, sans interface web ni aperçu
 ```
 
 L'API démarre même si la caméra est absente : le moteur retente l'ouverture
@@ -358,7 +359,38 @@ python server.py --test
 curl "http://<ip>:5000/objects"      # { "frame": "image", "test_mode": true, ... }
 ```
 
-### 7.1 Interface web
+### 7.2 Mode match (performance)
+
+`--match` privilégie le **débit de traitement** au détriment du confort : tout ce
+qui n'est pas nécessaire au relevé des positions est coupé.
+
+* **interface web désactivée** : plus de page HTML (`/`, `/ui`), plus de fichiers
+  statiques (`/static/…`) ;
+* **sorties image désactivées** : `/preview` et `/stream` ne sont pas servis →
+  aucun encodage JPEG dans la boucle ;
+* **annotations et HUD désactivés** (`detection.draw = false`) : l'image n'est
+  plus recopiée ni dessinée (tags, axes, texte) ;
+* **API JSON intacte** : `/objects`, `/objects/<clé>`, `/status`, `/position`,
+  `/table`, `/config`, `/calibration/*`, `/snapshot` et `/shutdown` restent
+  disponibles ;
+* **démarrage automatique** : pas besoin de `/start`. Le moteur reste en
+  détection **normale** — il cherche les **4 tags de coin** pour construire le
+  repère table (la caméra « se place »), puis relève les objets en millimètres.
+
+`GET /api` renvoie alors `"match_mode": true` et `"ui": null`, et sa section
+`endpoints` ne liste plus les routes web/aperçu. Toute requête vers une route
+désactivée répond `404`.
+
+```bash
+python server.py --match
+curl http://<ip>:5000/api       # { "ui": null, "match_mode": true, ... }
+curl http://<ip>:5000/objects   # positions, sans avoir appelé /start
+```
+
+> À combiner utilement avec un `--width/--height` et une qualité de flux
+> adaptés : le gain vient surtout de la suppression du rendu et du JPEG.
+
+### 7.3 Interface web
 
 Ouvrez simplement `http://<ip-lattepanda>:5000/` (ou `/ui`) dans un navigateur,
 depuis n'importe quelle machine du réseau local :
@@ -389,7 +421,7 @@ Détails techniques utiles :
 * les fichiers statiques ne sont pas mis en cache, pour que les modifications de
   l'interface soient visibles immédiatement après un rechargement.
 
-### 7.2 Arrêter le serveur
+### 7.4 Arrêter le serveur
 
 Trois moyens équivalents, tous **propres** : le moteur est arrêté, la boucle
 vidéo jointe et la caméra libérée avant que le processus ne se termine.
@@ -411,6 +443,30 @@ Le bouton **« Arrêter le serveur »** de l'interface web fait la même chose
 > `POST /shutdown` coupe le service : ne l'exposez pas au-delà de votre réseau
 > local. Sur un serveur sans arrêt câblé (par exemple en test), la route répond
 > `501` au lieu d'agir.
+
+### 7.5 Logs console
+
+Tous les messages sont écrits **sur la console** (`stderr`), **jamais dans un
+fichier**. Le niveau par défaut est `INFO` ; `-v/--verbose` passe en `DEBUG`
+pour le détail par image (étapes de détection, requêtes HTTP…).
+
+```bash
+python server.py -v            # logs détaillés (DEBUG)
+python server.py --match       # bilan perf toutes les 5 s, sans interface web
+```
+
+Repères utiles :
+
+| Message | Signification |
+|---|---|
+| `Configuration : … (N objets, M tags de coin, dessin=…)` | configuration effective au démarrage |
+| `Caméra prête : … — ouverture + chauffe en X ms` | temps d'ouverture / négociation |
+| `Première image reçue : WxH` | résolution réelle du flux |
+| `Repère table acquis (tags …, N inliers, résidu X mm)` | les tags de coin sont vus |
+| `Repère table perdu : …` | les tags de coin ne sont plus vus |
+| `perf: X fps \| traitement Y ms/image (max Z ms) \| mode=… \| objets=N` | bilan toutes les 5 s |
+| `GET /objects -> 200 en Y ms` | requête API (DEBUG), `WARNING` si > 1 s |
+| `Calibration calculée en X ms (N vues, rms=…)` | fin de calibration |
 
 ---
 

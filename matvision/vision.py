@@ -33,6 +33,9 @@ log = logging.getLogger(__name__)
 
 __all__ = ["VisionEngine", "VisionMode"]
 
+#: Intervalle (secondes) entre deux bilans de performance écrits sur la console.
+PERF_LOG_INTERVAL_S = 5.0
+
 
 class VisionMode(str, Enum):
     IDLE = "idle"
@@ -89,7 +92,11 @@ class VisionEngine:
             "detections": 0,
             "fps": 0.0,
             "last_frame_ts": 0.0,
+            "proc_ms": 0.0,       # durée moyenne de traitement (ms) sur la dernière seconde
+            "proc_ms_max": 0.0,   # pic de traitement (ms) depuis le dernier bilan
+            "last_proc_ms": 0.0,  # durée de la dernière image traitée (ms)
         }
+        self._last_table_ok = False
 
     # ------------------------------------------------------------------ #
     # Cycle de vie
@@ -141,6 +148,8 @@ class VisionEngine:
             self._objects = []
             self._localization = TableLocalization(reason="en attente")
             self._stats["detections"] = 0
+            self._last_table_ok = False
+        log.info("Relevés réinitialisés")
         return {"message": "relevés réinitialisés"}
 
     def start_calibration(self) -> dict:
@@ -156,6 +165,7 @@ class VisionEngine:
             if self._calibrator is not None:
                 self._calibrator.cancel()
             self._mode = VisionMode.IDLE
+        log.info("Calibration annulée")
         return {"message": "calibration annulée"}
 
     def reload_intrinsics(self) -> Intrinsics | None:
@@ -289,13 +299,20 @@ class VisionEngine:
     def _run(self) -> None:
         frames_window = 0
         window_start = time.monotonic()
+        last_perf_log = window_start
+        proc_ms_sum = 0.0
+        proc_ms_peak = 0.0
 
         while not self._stop_event.is_set():
             if not self.camera.is_open:
+                opened_at = time.perf_counter()
                 try:
                     self.camera.open()
                     with self._lock:
                         self._error = ""
+                    log.info(
+                        "Caméra ouverte en %.0f ms", (time.perf_counter() - opened_at) * 1000.0
+                    )
                 except CameraError as exc:
                     with self._lock:
                         self._error = str(exc)
@@ -303,17 +320,22 @@ class VisionEngine:
                     self._stop_event.wait(2.0)
                     continue
 
+            read_started = time.perf_counter()
             ok, frame = self.camera.read_latest(drain=2)
+            read_ms = (time.perf_counter() - read_started) * 1000.0
             if not ok or frame is None:
                 with self._lock:
                     self._stats["failed"] += 1
+                log.debug("Lecture caméra en échec (%.1f ms)", read_ms)
                 self._stop_event.wait(0.05)
                 continue
 
-            now = time.monotonic()
             if not self._frame_size_checked:
                 self._frame_size_checked = True
+                log.info("Première image reçue : %dx%d", frame.shape[1], frame.shape[0])
                 self._check_intrinsics_resolution(frame.shape[1], frame.shape[0])
+
+            proc_started = time.perf_counter()
             annotated = frame
             try:
                 annotated = self._handle_frame(frame)
@@ -321,18 +343,49 @@ class VisionEngine:
                 log.exception("Erreur pendant le traitement de l'image")
                 with self._lock:
                     self._error = "erreur de traitement (voir les logs)"
+            proc_ms = (time.perf_counter() - proc_started) * 1000.0
+            proc_ms_sum += proc_ms
+            proc_ms_peak = max(proc_ms_peak, proc_ms)
 
             with self._lock:
                 self._latest_frame = annotated
                 self._stats["frames"] += 1
                 self._stats["last_frame_ts"] = time.time()
+                self._stats["last_proc_ms"] = round(proc_ms, 2)
+                frames = self._stats["frames"]
+
+            if log.isEnabledFor(logging.DEBUG):
+                log.debug(
+                    "image %d traitée en %.1f ms (lecture %.1f ms)", frames, proc_ms, read_ms
+                )
 
             frames_window += 1
+            now = time.monotonic()
             elapsed = now - window_start
             if elapsed >= 1.0:
                 with self._lock:
                     self._stats["fps"] = round(frames_window / elapsed, 1)
+                    self._stats["proc_ms"] = round(proc_ms_sum / frames_window, 2)
+                    self._stats["proc_ms_max"] = round(proc_ms_peak, 2)
+                    fps = self._stats["fps"]
+                    proc_avg = self._stats["proc_ms"]
+                    mode = self._mode.value
+                    objects = len(self._objects)
+                if now - last_perf_log >= PERF_LOG_INTERVAL_S:
+                    log.info(
+                        "perf: %.1f fps | traitement %.1f ms/image (max %.1f ms) | "
+                        "mode=%s | objets=%d | frames=%d",
+                        fps,
+                        proc_avg,
+                        proc_ms_peak,
+                        mode,
+                        objects,
+                        frames,
+                    )
+                    last_perf_log = now
+                    proc_ms_peak = 0.0
                 frames_window = 0
+                proc_ms_sum = 0.0
                 window_start = now
 
             if self.display:
@@ -340,6 +393,7 @@ class VisionEngine:
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     with self._lock:
                         self._mode = VisionMode.IDLE
+                    log.info("Arrêt de la détection demandé depuis la fenêtre (touche « q »)")
 
         if self.display:
             cv2.destroyAllWindows()
@@ -368,11 +422,14 @@ class VisionEngine:
     # ------------------------------------------------------------------ #
     def _detect(self, frame: np.ndarray) -> np.ndarray:
         """Détecte les 4 tags de coin, construit la ROI, puis relève les objets."""
+        started = time.perf_counter()
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         corner_ids = self.config.table.marker_ids
+        gray_done = time.perf_counter()
 
         found, _rejected = self.detector.detect_by_id(gray, gray=True)
         corner_markers = {mid: corners for mid, corners in found.items() if mid in corner_ids}
+        corners_done = time.perf_counter()
 
         localization = localize_table(
             corner_markers,
@@ -380,6 +437,8 @@ class VisionEngine:
             self._intrinsics,
             min_inliers=self.config.detection.min_homography_inliers,
         )
+        locate_done = time.perf_counter()
+        self._log_localization(localization)
 
         objects: list[dict] = []
         object_markers: dict[int, np.ndarray] = {}
@@ -405,17 +464,34 @@ class VisionEngine:
                 if object_config is not None:
                     objects.append(self._locate(object_config, corners, localization))
 
+        objects_done = time.perf_counter()
+
         with self._lock:
             self._localization = localization
             self._objects = objects
             self._stats["detections"] = len(objects)
 
-        if not self.config.detection.draw:
-            return frame
+        if self.config.detection.draw:
+            canvas = frame.copy()
+            annotate(canvas, corner_markers, object_markers, localization, objects)
+            draw_hud(canvas, self._hud_lines())
+        else:
+            canvas = frame
 
-        canvas = frame.copy()
-        annotate(canvas, corner_markers, object_markers, localization, objects)
-        draw_hud(canvas, self._hud_lines())
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "détection : gris %.1f ms | tags %.1f ms (%d trouvés, %d de coin) | "
+                "repère %.1f ms (%s) | objets %.1f ms (%d) | total %.1f ms",
+                (gray_done - started) * 1000.0,
+                (corners_done - gray_done) * 1000.0,
+                len(found),
+                len(corner_markers),
+                (locate_done - corners_done) * 1000.0,
+                "ok" if localization.ok else (localization.reason or "non localisé"),
+                (objects_done - locate_done) * 1000.0,
+                len(objects),
+                (time.perf_counter() - started) * 1000.0,
+            )
         return canvas
 
     def _detect_test(self, frame: np.ndarray) -> np.ndarray:
@@ -424,8 +500,10 @@ class VisionEngine:
         Les tags de coin ne sont pas requis. Les positions sont exprimées en
         pixels (repère image, ``+y`` vers le bas) et non en millimètres.
         """
+        started = time.perf_counter()
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         found, _rejected = self.detector.detect_by_id(gray, gray=True)
+        detected = time.perf_counter()
 
         objects = [self._locate_test(marker_id, corners) for marker_id, corners in found.items()]
 
@@ -436,13 +514,35 @@ class VisionEngine:
             self._objects = objects
             self._stats["detections"] = len(objects)
 
-        if not self.config.detection.draw:
-            return frame
+        if self.config.detection.draw:
+            canvas = frame.copy()
+            annotate_test(canvas, found, objects, self._intrinsics)
+            draw_hud(canvas, self._hud_lines())
+        else:
+            canvas = frame
 
-        canvas = frame.copy()
-        annotate_test(canvas, found, objects, self._intrinsics)
-        draw_hud(canvas, self._hud_lines())
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "mode test : gris+tags %.1f ms (%d tags) | relevé %.1f ms | total %.1f ms",
+                (detected - started) * 1000.0,
+                len(found),
+                (time.perf_counter() - detected) * 1000.0,
+                (time.perf_counter() - started) * 1000.0,
+            )
         return canvas
+
+    def _log_localization(self, localization: TableLocalization) -> None:
+        """Trace les transitions d'état du repère table (acquis / perdu)."""
+        if localization.ok and not self._last_table_ok:
+            log.info(
+                "Repère table acquis (tags %s, %d inliers, résidu %.1f mm)",
+                localization.used_ids,
+                localization.inliers,
+                localization.residual_mm,
+            )
+        elif not localization.ok and self._last_table_ok:
+            log.warning("Repère table perdu : %s", localization.reason or "raison inconnue")
+        self._last_table_ok = localization.ok
 
     def _locate_test(self, marker_id: int, corners: np.ndarray) -> dict:
         """Relevé d'un tag en pixels : centre, angle image, taille apparente.

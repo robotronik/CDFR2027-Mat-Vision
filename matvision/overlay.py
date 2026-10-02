@@ -6,6 +6,7 @@ moteur (:mod:`matvision.vision`) reste ainsi centré sur l'acquisition.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import cv2
@@ -13,6 +14,8 @@ import numpy as np
 
 from .aruco import draw_markers, marker_center
 from .table import TableLocalization
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover - uniquement pour les annotations de type
     from .calibration import Intrinsics
@@ -48,6 +51,12 @@ def annotate(
     objects: list[dict],
 ) -> None:
     """Dessine les tags de coin, les objets relevés et les axes de la table."""
+    log.debug(
+        "annotate : %d tags de coin, %d tags objets, %d relevés",
+        len(corner_markers),
+        len(object_markers),
+        len(objects),
+    )
     draw_markers(frame, corner_markers, color=CORNER_COLOR)
     draw_markers(frame, object_markers, color=OBJECT_COLOR)
     _draw_table_axes(frame, localization)
@@ -95,6 +104,7 @@ def annotate_test(
     déclaré), et les éléments de jeu voient leurs arêtes tracées.
     """
     declared = {item["id"] for item in objects if item.get("declared")}
+    log.debug("annotate_test : %d tags détectés, %d déclarés", len(markers), len(declared))
     draw_markers(frame, {m: c for m, c in markers.items() if m not in declared}, color=TEST_COLOR)
     draw_markers(frame, {m: c for m, c in markers.items() if m in declared}, color=OBJECT_COLOR)
 

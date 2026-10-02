@@ -4,6 +4,10 @@ L'interface web est servie sur ``/`` (négociation de contenu : un navigateur
 reçoit la page HTML, ``curl`` reçoit le JSON de découverte) et sur ``/ui``.
 Le reste répond en JSON, sauf ``/preview`` (JPEG) et ``/stream`` (MJPEG).
 
+Avec ``create_app(..., web_ui=False)`` (mode ``--match`` du serveur), l'interface
+web, les statiques et les sorties image ne sont pas enregistrées : seules les
+routes JSON subsistent, ce qui évite tout encodage JPEG dans la boucle.
+
 La liste des routes n'est écrite qu'à un seul endroit : la fonction
 ``_discovery`` ci-dessous.
 """
@@ -16,7 +20,7 @@ import time
 from dataclasses import asdict
 from typing import Any, Callable
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, g, jsonify, render_template, request
 
 from . import __version__
 from .vision import VisionEngine
@@ -28,19 +32,27 @@ __all__ = ["create_app"]
 #: Délai avant l'arrêt effectif, pour laisser la réponse HTTP partir.
 SHUTDOWN_DELAY_S = 0.3
 
+#: Au-delà de ce seuil (ms), une requête est signalée en WARNING.
+SLOW_REQUEST_MS = 1000.0
+
 
 def create_app(
     engine: VisionEngine,
     *,
     cors: bool = True,
     on_shutdown: Callable[[], None] | None = None,
+    web_ui: bool = True,
 ) -> Flask:
     """Construit l'application Flask autour d'un :class:`VisionEngine`.
 
     :param on_shutdown: appelée par ``POST /shutdown`` pour arrêter le serveur.
         Sans ce rappel, la route répond ``501`` (utile en test).
+    :param web_ui: quand ``False`` (mode match), l'interface web et les sorties
+        image ne sont **pas** servies : ni page HTML, ni fichiers statiques, ni
+        ``/preview``, ni ``/stream`` (donc aucun encodage JPEG). Seules les
+        routes JSON subsistent, pour alléger la boucle de traitement.
     """
-    app = Flask(__name__)
+    app = Flask(__name__, static_folder="static" if web_ui else None)
     # Interface servie depuis un réseau local : on veut voir les mises à jour
     # immédiatement, donc pas de mise en cache des fichiers statiques.
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
@@ -54,6 +66,36 @@ def create_app(
 
     config = engine.config
 
+    log.info(
+        "API Flask créée (interface web %s, CORS %s)",
+        "activée" if web_ui else "désactivée",
+        "activé" if cors else "désactivé",
+    )
+
+    # ------------------------------------------------------------------ #
+    # Chronométrage des requêtes (console uniquement, aucun fichier de log)
+    # ------------------------------------------------------------------ #
+    @app.before_request
+    def _start_request_timer() -> None:
+        g.request_started = time.perf_counter()
+
+    @app.after_request
+    def _log_request(response: Response) -> Response:
+        started = getattr(g, "request_started", None)
+        if started is None or (response.mimetype or "").startswith("multipart"):
+            return response
+        duration_ms = (time.perf_counter() - started) * 1000.0
+        level = logging.WARNING if duration_ms >= SLOW_REQUEST_MS else logging.DEBUG
+        log.log(
+            level,
+            "%s %s -> %d en %.1f ms",
+            request.method,
+            request.path,
+            response.status_code,
+            duration_ms,
+        )
+        return response
+
     # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
@@ -63,71 +105,83 @@ def create_app(
         response.headers["Cache-Control"] = "no-store"
         return response
 
-    def _preview_response(quality: int | None) -> Response:
-        data = engine.preview_jpeg(quality)
-        if data is None:
-            return _json({"message": "aucune image disponible"}, 503)
-        return Response(
-            data,
-            mimetype="image/jpeg",
-            headers={"Cache-Control": "no-store, max-age=0"},
-        )
-
     # ------------------------------------------------------------------ #
     # Découverte & interface web
     # ------------------------------------------------------------------ #
     def _discovery() -> dict[str, Any]:
+        endpoints: dict[str, str] = {
+            "GET /health": "test de vie",
+            "GET /status": "état complet du moteur",
+            "GET|POST /start": "démarre la détection",
+            "GET|POST /stop": "arrête la détection",
+            "GET|POST /reset": "réinitialise le suivi",
+            "GET /objects": "objets détectés (repère table, mm)",
+            "GET /objects/<clé>": "objets d'un tag ou d'un libellé",
+            "GET /position": "pose de la caméra dans le repère table",
+            "GET /table": "géométrie de la table et tags de coin",
+            "GET /config": "configuration effective",
+            "POST /calibration/start": "calibration automatique (damier)",
+            "GET /calibration/status": "progression de la calibration",
+            "POST /calibration/stop": "annule la calibration",
+            "GET /calibration/result": "intrinsèques courantes",
+            "POST /snapshot": "enregistre l'image courante sur le disque",
+            "POST /shutdown": "arrête le serveur et le processus",
+        }
+        if web_ui:
+            endpoints.update(
+                {
+                    "GET /": "interface web (navigateur) ou ce JSON (curl)",
+                    "GET /ui": "interface web de pilotage",
+                    "GET /preview": "image annotée (JPEG)",
+                    "GET /stream": "flux MJPEG temps réel",
+                }
+            )
         return {
             "name": "matvision",
             "version": __version__,
             "description": "Mat de vision ArUco (LattePanda Delta + Logitech 4K Stream)",
-            "ui": "/ui",
-            "endpoints": {
-                "GET /": "interface web (navigateur) ou ce JSON (curl)",
-                "GET /ui": "interface web de pilotage",
-                "GET /health": "test de vie",
-                "GET /status": "état complet du moteur",
-                "GET|POST /start": "démarre la détection",
-                "GET|POST /stop": "arrête la détection",
-                "GET|POST /reset": "réinitialise le suivi",
-                "GET /objects": "objets détectés (repère table, mm)",
-                "GET /objects/<clé>": "objets d'un tag ou d'un libellé",
-                "GET /position": "pose de la caméra dans le repère table",
-                "GET /table": "géométrie de la table et tags de coin",
-                "GET /preview": "image annotée (JPEG)",
-                "GET /stream": "flux MJPEG temps réel",
-                "GET /config": "configuration effective",
-                "POST /calibration/start": "calibration automatique (damier)",
-                "GET /calibration/status": "progression de la calibration",
-                "POST /calibration/stop": "annule la calibration",
-                "GET /calibration/result": "intrinsèques courantes",
-                "POST /snapshot": "enregistre l'image courante sur le disque",
-                "POST /shutdown": "arrête le serveur et le processus",
-            },
+            "ui": "/ui" if web_ui else None,
+            "match_mode": not web_ui,
+            "endpoints": endpoints,
         }
-
-    @app.get("/")
-    def index() -> Response:
-        """Interface web pour un navigateur, découverte JSON pour le reste."""
-        best = request.accept_mimetypes.best_match(["text/html", "application/json"])
-        if best == "text/html" and (
-            request.accept_mimetypes["text/html"] > request.accept_mimetypes["application/json"]
-        ):
-            return _page()
-        return _json(_discovery())
-
-    @app.get("/ui")
-    def ui() -> Response:
-        return _page()
 
     @app.get("/api")
     def api_index() -> Response:
         return _json(_discovery())
 
-    def _page() -> Response:
-        response = Response(render_template("index.html", version=__version__), mimetype="text/html")
-        response.headers["Cache-Control"] = "no-store"
-        return response
+    if web_ui:
+
+        def _preview_response(quality: int | None) -> Response:
+            data = engine.preview_jpeg(quality)
+            if data is None:
+                return _json({"message": "aucune image disponible"}, 503)
+            return Response(
+                data,
+                mimetype="image/jpeg",
+                headers={"Cache-Control": "no-store, max-age=0"},
+            )
+
+        def _page() -> Response:
+            response = Response(
+                render_template("index.html", version=__version__), mimetype="text/html"
+            )
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
+        @app.get("/")
+        def index() -> Response:
+            """Interface web pour un navigateur, découverte JSON pour le reste."""
+            best = request.accept_mimetypes.best_match(["text/html", "application/json"])
+            if best == "text/html" and (
+                request.accept_mimetypes["text/html"]
+                > request.accept_mimetypes["application/json"]
+            ):
+                return _page()
+            return _json(_discovery())
+
+        @app.get("/ui")
+        def ui() -> Response:
+            return _page()
 
     @app.get("/health")
     def health() -> Response:
@@ -195,56 +249,58 @@ def create_app(
         return _json({"count": len(matches), "objects": matches})
 
     # ------------------------------------------------------------------ #
-    # Aperçu
+    # Aperçu (absent en mode match : aucun encodage JPEG)
     # ------------------------------------------------------------------ #
-    @app.get("/preview")
-    @app.get("/preview.jpg")
-    def preview() -> Response:
-        quality = request.args.get("quality", type=int)
-        return _preview_response(quality)
+    if web_ui:
 
-    @app.get("/stream")
-    def stream() -> Response:
-        """Flux MJPEG temps réel, consommable directement par une balise ``<img>``.
+        @app.get("/preview")
+        @app.get("/preview.jpg")
+        def preview() -> Response:
+            quality = request.args.get("quality", type=int)
+            return _preview_response(quality)
 
-        Paramètres : ``fps`` (défaut 10), ``quality`` (défaut config),
-        ``frames`` (0 = illimité) et ``max_seconds`` (garde-fou, défaut 300 s).
-        """
-        quality = request.args.get("quality", type=int)
-        fps = request.args.get("fps", type=float, default=10.0) or 10.0
-        max_frames = request.args.get("frames", type=int, default=0) or 0
-        max_seconds = request.args.get("max_seconds", type=float, default=300.0) or 0.0
-        interval = 1.0 / max(1.0, min(float(fps), 60.0))
+        @app.get("/stream")
+        def stream() -> Response:
+            """Flux MJPEG temps réel, consommable directement par une balise ``<img>``.
 
-        def generate():
-            boundary = b"--frame\r\n"
-            started = time.monotonic()
-            sent = 0
-            while True:
-                if max_frames and sent >= max_frames:
-                    break
-                if max_seconds and (time.monotonic() - started) > max_seconds:
-                    break
-                data = engine.preview_jpeg(quality)
-                if data is None:
-                    time.sleep(0.2)
-                    continue
-                yield (
-                    boundary
-                    + b"Content-Type: image/jpeg\r\nContent-Length: "
-                    + str(len(data)).encode("ascii")
-                    + b"\r\n\r\n"
-                    + data
-                    + b"\r\n"
-                )
-                sent += 1
-                time.sleep(interval)
+            Paramètres : ``fps`` (défaut 10), ``quality`` (défaut config),
+            ``frames`` (0 = illimité) et ``max_seconds`` (garde-fou, défaut 300 s).
+            """
+            quality = request.args.get("quality", type=int)
+            fps = request.args.get("fps", type=float, default=10.0) or 10.0
+            max_frames = request.args.get("frames", type=int, default=0) or 0
+            max_seconds = request.args.get("max_seconds", type=float, default=300.0) or 0.0
+            interval = 1.0 / max(1.0, min(float(fps), 60.0))
 
-        return Response(
-            generate(),
-            mimetype="multipart/x-mixed-replace; boundary=frame",
-            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
-        )
+            def generate():
+                boundary = b"--frame\r\n"
+                started = time.monotonic()
+                sent = 0
+                while True:
+                    if max_frames and sent >= max_frames:
+                        break
+                    if max_seconds and (time.monotonic() - started) > max_seconds:
+                        break
+                    data = engine.preview_jpeg(quality)
+                    if data is None:
+                        time.sleep(0.2)
+                        continue
+                    yield (
+                        boundary
+                        + b"Content-Type: image/jpeg\r\nContent-Length: "
+                        + str(len(data)).encode("ascii")
+                        + b"\r\n\r\n"
+                        + data
+                        + b"\r\n"
+                    )
+                    sent += 1
+                    time.sleep(interval)
+
+            return Response(
+                generate(),
+                mimetype="multipart/x-mixed-replace; boundary=frame",
+                headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+            )
 
     @app.post("/snapshot")
     def snapshot() -> Response:

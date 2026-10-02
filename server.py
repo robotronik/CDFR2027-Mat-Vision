@@ -15,6 +15,11 @@ Mode test — vérifier la détection des tags sans les tags de coin de la table
 
     python server.py --test
 
+Mode match — performance maximale, sans interface web ni aperçu image
+(détection lancée automatiquement, repère table via les 4 tags de coin) ::
+
+    python server.py --match
+
 Depuis un autre poste du réseau local ::
 
     curl http://<ip-lattepanda>:5000/objects
@@ -37,6 +42,7 @@ import os
 import signal
 import sys
 import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -70,14 +76,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "de la table (détection lancée automatiquement)."
         ),
     )
+    parser.add_argument(
+        "--match",
+        action="store_true",
+        help=(
+            "Mode match : désactive l'interface web et l'aperçu/flux image ainsi que "
+            "les annotations et le HUD, pour accélérer le traitement. Seules les routes "
+            "JSON (/objects, /status…) restent servies. La détection démarre "
+            "automatiquement : recherche des 4 tags de coin de la table, puis relevé "
+            "des objets."
+        ),
+    )
     parser.add_argument("--display", action="store_true", help="Affiche la fenêtre de prévisualisation locale.")
     parser.add_argument("--no-cors", action="store_true", help="Désactive l'en-tête CORS.")
     parser.add_argument("--verbose", "-v", action="store_true")
     return parser.parse_args(argv)
 
 
+def autostart_requested(args: argparse.Namespace) -> bool:
+    """La détection doit-elle démarrer sans attendre ``POST /start`` ?
+
+    Vrai avec ``--autostart``, ``--test`` ou ``--match``. En mode match le moteur
+    reste en détection **normale** : il cherche d'abord les 4 tags de coin pour se
+    repérer dans le repère table, puis relève les objets.
+    """
+    return bool(args.autostart or args.test or args.match)
+
+
 def main(argv: list[str] | None = None) -> int:
+    boot_started = time.monotonic()
     args = parse_args(argv)
+    # Journalisation sur la console (stderr) uniquement : aucun fichier de log n'est écrit.
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
@@ -86,6 +115,14 @@ def main(argv: list[str] | None = None) -> int:
 
     config_path = Path(args.config)
     config = load_config(config_path if config_path.exists() else None)
+
+    log.info(
+        "Configuration : %s (%d objets, %d tags de coin, dessin=%s)",
+        config_path if config_path.exists() else "valeurs par défaut",
+        len(config.objects),
+        len(config.table.markers),
+        "oui" if config.detection.draw else "non",
+    )
 
     if args.host:
         config.api_host = args.host
@@ -107,10 +144,21 @@ def main(argv: list[str] | None = None) -> int:
             "(les tags de coin ne sont pas nécessaires)."
         )
 
+    if args.match:
+        # Allège la boucle de traitement : plus d'annotation ni de HUD sur l'image.
+        config.detection.draw = False
+        log.info(
+            "Mode match : interface web, aperçu/flux et annotations désactivés "
+            "(API JSON seule), détection lancée automatiquement."
+        )
+
     engine = VisionEngine(config, display=args.display, test_mode=args.test)
     engine.start()
-    if args.autostart or args.test:
+    if autostart_requested(args):
+        # En mode match, la détection « normale » cherche les 4 tags de coin pour
+        # construire le repère table avant de relever les objets.
         engine.start_detection()
+        log.info("Détection lancée automatiquement (sans attendre /start)")
 
     stopping = threading.Event()
     shutdown_thread: threading.Thread | None = None
@@ -131,15 +179,26 @@ def main(argv: list[str] | None = None) -> int:
         shutdown_thread.start()
 
     app = create_app(
-        engine, cors=not args.no_cors, on_shutdown=lambda: request_stop("POST /shutdown")
+        engine,
+        cors=not args.no_cors,
+        on_shutdown=lambda: request_stop("POST /shutdown"),
+        web_ui=not args.match,
     )
     server = make_server(config.api_host, config.api_port, app, threaded=True)
 
     signal.signal(signal.SIGINT, lambda *_: request_stop("Ctrl+C"))
     signal.signal(signal.SIGTERM, lambda *_: request_stop("SIGTERM"))
 
-    log.info("API disponible sur http://%s:%d/", config.api_host, config.api_port)
-    log.info("Interface web     : http://%s:%d/ui", config.api_host, config.api_port)
+    log.info(
+        "API disponible sur http://%s:%d/ (démarrage en %.0f ms)",
+        config.api_host,
+        config.api_port,
+        (time.monotonic() - boot_started) * 1000.0,
+    )
+    if args.match:
+        log.info("Mode match        : aucune interface web, aperçu ni annotation")
+    else:
+        log.info("Interface web     : http://%s:%d/ui", config.api_host, config.api_port)
     log.info(
         "Arrêt             : Ctrl+C, « kill %d » ou « curl -X POST http://%s:%d/shutdown »",
         os.getpid(),

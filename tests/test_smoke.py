@@ -671,6 +671,63 @@ def test_web_interface() -> None:
             engine.shutdown()
 
 
+def test_match_mode() -> None:
+    """Mode match : interface web et sorties image désactivées, API JSON seule."""
+    with tempfile.TemporaryDirectory() as tmp:
+        config = make_config(Path(tmp))
+        config.detection.draw = False
+        engine = VisionEngine(config, display=False)
+        engine.camera = FakeCamera(build_scene(config))
+        engine.start()
+        try:
+            engine.start_detection()
+            deadline = time.time() + 25.0
+            while time.time() < deadline and not engine.objects()["objects"]:
+                time.sleep(0.05)
+
+            client = create_app(engine, web_ui=False).test_client()
+
+            # Aucune route web ni aperçu : tout répond 404 (même les statiques).
+            for route in ("/", "/ui", "/preview", "/preview.jpg", "/stream", "/static/app.js"):
+                assert client.get(route).status_code == 404, route
+
+            # La découverte ne référence plus l'interface web ni les sorties image.
+            discovery = client.get("/api").get_json()
+            assert discovery["ui"] is None, discovery
+            assert discovery["match_mode"] is True, discovery
+            assert not any(
+                key.endswith(("/preview", "/preview.jpg", "/stream", "/ui", "/"))
+                for key in discovery["endpoints"]
+            ), discovery["endpoints"]
+
+            # L'API JSON reste pleinement fonctionnelle.
+            assert client.get("/health").get_json()["ok"] is True
+            assert client.get("/status").status_code == 200
+            objects = client.get("/objects")
+            assert objects.status_code == 200 and objects.get_json()["count"] > 0, objects
+
+            # La détection « normale » a bien repéré la table via les 4 tags de coin
+            # (la caméra « se place ») avant de relever les objets.
+            assert engine.status()["table"]["ok"] is True, engine.status()["table"]
+
+            # L'option de ligne de commande est bien câblée : --match démarre la
+            # détection sans attendre /start (comme --test et --autostart).
+            import server as server_module
+
+            assert server_module.parse_args(["--match"]).match is True
+            assert server_module.parse_args([]).match is False
+            assert server_module.autostart_requested(server_module.parse_args(["--match"])) is True
+            assert server_module.autostart_requested(server_module.parse_args(["--test"])) is True
+            assert server_module.autostart_requested(
+                server_module.parse_args(["--autostart"])
+            ) is True
+            assert server_module.autostart_requested(server_module.parse_args([])) is False
+
+            print("  ok  mode match : API JSON seule, interface web et aperçu absents")
+        finally:
+            engine.shutdown()
+
+
 def build_object_scene(
     config: Config, marker_id: int = 13, x: float = 0.0, y: float = 0.0, angle: float = 0.0
 ) -> np.ndarray:
@@ -763,6 +820,7 @@ TESTS = [
     test_engine_and_api,
     test_shutdown_route,
     test_web_interface,
+    test_match_mode,
     test_test_mode,
 ]
 

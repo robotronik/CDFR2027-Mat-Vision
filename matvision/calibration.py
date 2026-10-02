@@ -336,6 +336,7 @@ class AutoCalibrator:
         size = self._image_size or (0, 0)
         flags = self._resolve_flags()
         log.info("Calibration sur %d vues (%dx%d)...", len(self._object_points), size[0], size[1])
+        compute_started = time.perf_counter()
         try:
             rms, matrix, dist, rvecs, tvecs = cv2.calibrateCamera(
                 self._object_points, self._image_points, size, None, None, flags=flags
@@ -364,6 +365,12 @@ class AutoCalibrator:
         state.finished_at = time.time()
         state.message = f"calibration terminée (erreur de reprojection {intrinsics.rms:.3f} px)"
         log.info(state.message)
+        log.info(
+            "Calibration calculée en %.0f ms (%d vues, rms=%.3f px)",
+            (time.perf_counter() - compute_started) * 1000.0,
+            len(self._object_points),
+            intrinsics.rms,
+        )
         return intrinsics
 
     # ------------------------------------------------------------------ #

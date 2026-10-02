@@ -53,6 +53,7 @@ class Camera:
     def open(self) -> "Camera":
         """Ouvre la caméra et applique la configuration demandée."""
         self.close()
+        started = time.perf_counter()
         device = self._normalize_device(self.config.device)
         backend = _BACKENDS.get(str(self.config.backend).lower(), cv2.CAP_ANY)
 
@@ -78,6 +79,15 @@ class Camera:
 
         for _ in range(max(0, int(self.config.warmup_frames))):
             capture.grab()
+
+        log.info(
+            "Caméra prête : %dx%d @ %.1f fps (%s) — ouverture + chauffe en %.0f ms",
+            self._size[0],
+            self._size[1],
+            self._fps,
+            self._fourcc or "?",
+            (time.perf_counter() - started) * 1000.0,
+        )
         return self
 
     # ------------------------------------------------------------------ #
@@ -106,6 +116,7 @@ class Camera:
         if self._capture is not None:
             self._capture.release()
             self._capture = None
+            log.debug("Caméra fermée")
 
     # ------------------------------------------------------------------ #
     @property
@@ -160,8 +171,8 @@ class Camera:
         if not self.config.auto_white_balance and hasattr(cv2, "CAP_PROP_AUTO_WB"):
             self._capture.set(cv2.CAP_PROP_AUTO_WB, 0)
 
-        log.info(
-            "Caméra prête : %dx%d @ %.1f fps (%s)",
+        log.debug(
+            "Réglages négociés : %dx%d @ %.1f fps (%s)",
             self._size[0],
             self._size[1],
             self._fps,
