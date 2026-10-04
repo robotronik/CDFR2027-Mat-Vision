@@ -954,7 +954,8 @@ def test_fleet_robot_control() -> None:
             assert response.status_code == 200 and response.get_json()["ok"] is True
             assert state["strategy"] == "B", state
 
-            assert client.post("/fleet/main/color", json={"color": 2}).status_code == 200
+            # La couleur est commune : la cible « all » l'applique à toute la flotte.
+            assert client.post("/fleet/all/color", json={"color": 2}).status_code == 200
             assert state["team"] == 2, state
 
             # Un refus du robot (ex. changement interdit en course) est relayé.

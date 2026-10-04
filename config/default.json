@@ -94,7 +94,7 @@
     "request_timeout_s": 0.8,
     "path_window_s": 30.0,
     "map_image": "",
-    "main": { "name": "Principal", "host": "", "port": 80 },
+    "main": { "name": "Principal", "host": "172.20.10.3", "port": 80 },
     "hunter": { "name": "Chasseur", "host": "", "port": 80 },
     "swarm": [
       { "name": "Essaim 1", "host": "", "port": 80 },

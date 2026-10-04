@@ -410,7 +410,7 @@ hors ligne) est organisée en **quatre onglets** :
 
 | Onglet | Détail |
 |---|---|
-| **Stratégie** | couleur et stratégie du **robot principal**, du **chasseur** et de l'**essaim** (tous les petits robots avec la même stratégie). Relaie vers l'API du robot et se resynchronise automatiquement si la stratégie change sur le robot (§9.4). |
+| **Stratégie** | **couleur commune** au principal, au chasseur et à l'essaim (un seul sélecteur), puis une **stratégie par groupe** (le même choix pour tous les petits robots). Relaie vers l'API des robots et se resynchronise automatiquement si la stratégie change sur un robot (§9.4). |
 | **Live table** | vue de dessus : positions et **trajectoires** des robots (principal, chasseur, essaim), **robot adverse** (couleur opposée) et **objets de jeu** détectés par le mat, sur la map de l'année en fond. |
 | **Vision** | interface historique du mat : aperçu caméra, plan de table, objets détectés, repère/caméra, calibration. |
 | **Robot principal** | tous les onglets de l'interface du robot principal (Accueil, Control, Camera, Live Table, Lidar, PAMIs, Logs, Robot) affichés dans des iframes pointant sur son adresse. |
@@ -513,7 +513,7 @@ Repères utiles :
 | `GET` | `/fleet` | État des robots : en ligne, couleur, stratégie, table |
 | `GET` | `/fleet/strategies` | Stratégies disponibles par robot |
 | `POST` | `/fleet/<cible>/strategy` | Change la stratégie (`<cible>` = `main`, `hunter`, `swarm`, `swarm/<i>` ou un nom) |
-| `POST` | `/fleet/<cible>/color` | Change la couleur (`{"color": 1}` bleu, `{"color": 2}` jaune) |
+| `POST` | `/fleet/<cible>/color` | Change la couleur (`all` = toute la flotte ; `{"color": 1}` bleu, `{"color": 2}` jaune) |
 | `GET` | `/fleet/live` | Positions, trajectoires, adversaire et objets de jeu |
 | `GET`/`POST` | `/fleet/report` | Position déclarée d'un robot sans tag ; renvoie les objets de jeu |
 
@@ -572,9 +572,9 @@ curl http://192.168.1.50:5000/fleet
 curl http://192.168.1.50:5000/fleet/strategies
 curl http://192.168.1.50:5000/fleet/live
 
-# Changer la stratégie du robot principal, la couleur de l'essaim
+# Changer la stratégie du principal, la couleur commune à toute l'équipe
 curl -X POST http://192.168.1.50:5000/fleet/main/strategy -H 'Content-Type: application/json' -d '{"strat": "Match"}'
-curl -X POST http://192.168.1.50:5000/fleet/swarm/color   -H 'Content-Type: application/json' -d '{"color": 1}'
+curl -X POST http://192.168.1.50:5000/fleet/all/color    -H 'Content-Type: application/json' -d '{"color": 1}'
 
 # Un petit robot sans tag déclare sa position et reçoit les objets de jeu
 curl -X POST http://192.168.1.50:5000/fleet/report -H 'Content-Type: application/json' \
@@ -666,6 +666,12 @@ robot est piloté via son API REST (`/get_robot`, `/get_strategies`, `/set_strat
 
 Le **chasseur** et l'**essaim** n'ont pas de tag : ils déclarent leur position à
 chaque requête et reçoivent en retour les objets de jeu.
+
+La **couleur est commune** au principal, au chasseur et à l'essaim :
+`POST /fleet/all/color` l'applique à toute la flotte (l'interface ne propose donc
+qu'un seul sélecteur de couleur). Chaque groupe garde en revanche sa propre
+stratégie (`POST /fleet/main/strategy`, `/fleet/hunter/strategy`,
+`/fleet/swarm/strategy`).
 
 **Contrat pour le chasseur et les petits robots** :
 
