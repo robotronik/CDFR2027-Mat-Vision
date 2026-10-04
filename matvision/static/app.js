@@ -519,4 +519,10 @@ async function init() {
   loop();
 }
 
+// Le canvas de la carte ne peut être redimensionné que lorsque son onglet est
+// visible : on rafraîchit donc l'affichage au retour sur l'onglet Vision.
+document.addEventListener('tabchange', (event) => {
+  if (event.detail.tab === 'vision') refresh();
+});
+
 document.addEventListener('DOMContentLoaded', init);

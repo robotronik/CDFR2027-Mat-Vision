@@ -89,6 +89,19 @@
       "box": { "length_mm": 320.0, "width_mm": 110.0, "height_mm": 110.0 }
     }
   ],
+  "robots": {
+    "our_color": "",
+    "request_timeout_s": 0.8,
+    "path_window_s": 30.0,
+    "map_image": "",
+    "main": { "name": "Principal", "host": "", "port": 80 },
+    "hunter": { "name": "Chasseur", "host": "", "port": 80 },
+    "swarm": [
+      { "name": "Essaim 1", "host": "", "port": 80 },
+      { "name": "Essaim 2", "host": "", "port": 80 },
+      { "name": "Essaim 3", "host": "", "port": 80 }
+    ]
+  },
   "api_host": "0.0.0.0",
   "api_port": 5000,
   "preview_quality": 75

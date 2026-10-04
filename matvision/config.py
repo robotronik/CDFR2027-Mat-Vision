@@ -205,6 +205,74 @@ class CalibrationConfig:
 
 
 @dataclass
+class RobotConfig:
+    """Un robot pilotable par le mat via son API REST embarquée."""
+
+    name: str = ""
+    host: str = ""                 # adresse IP ou nom d'hôte du robot
+    port: int = 80                 # port de l'API REST (80 par défaut sur le robot)
+    enabled: bool = True
+    tag: int | None = None         # tag ArUco du robot principal (None = déduit de la couleur)
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "RobotConfig":
+        return cls(**_subset(cls, data))
+
+    @property
+    def base_url(self) -> str:
+        return f"http://{self.host}:{self.port}"
+
+
+def _default_swarm() -> list["RobotConfig"]:
+    return [RobotConfig() for _ in range(3)]
+
+
+@dataclass
+class RobotsConfig:
+    """Flotte du mat : robot principal, chasseur et essaim de petits robots.
+
+    Chaque robot est piloté via son API REST (``/get_robot``, ``/get_strategies``,
+    ``/set_strat``, ``/set_color``). Le robot principal porte un tag ArUco (déduit
+    de sa couleur : bleu = tags 1-5, jaune = tags 6-10) ; le chasseur et les petits
+    robots n'ont pas de tag et déclarent leur position via ``POST /fleet/report``.
+    """
+
+    our_color: str = ""            # "blue" | "yellow" | "" (déduit du robot principal)
+    request_timeout_s: float = 0.8  # délai maxi d'un appel à un robot (s)
+    path_window_s: float = 30.0     # durée de trajectoire conservée (s)
+    map_image: str = ""             # image de fond optionnelle (chemin ou URL)
+    main: RobotConfig | None = None
+    hunter: RobotConfig | None = None
+    swarm: list[RobotConfig] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "RobotsConfig":
+        data = dict(data or {})
+        nested_main = data.pop("main", None)
+        nested_hunter = data.pop("hunter", None)
+        nested_swarm = data.pop("swarm", None)
+        config = cls(**_subset(cls, data))
+        if nested_main is not None:
+            config.main = RobotConfig.from_dict(nested_main)
+        if nested_hunter is not None:
+            config.hunter = RobotConfig.from_dict(nested_hunter)
+        if nested_swarm is not None:
+            config.swarm = [RobotConfig.from_dict(item) for item in nested_swarm]
+        return config
+
+    def targets(self) -> list[tuple[str, "RobotConfig"]]:
+        """Liste ordonnée ``(clé, robot)`` : ``main``, ``hunter``, ``swarm/<i>``."""
+        items: list[tuple[str, RobotConfig]] = []
+        if self.main is not None:
+            items.append(("main", self.main))
+        if self.hunter is not None:
+            items.append(("hunter", self.hunter))
+        for index, robot in enumerate(self.swarm):
+            items.append((f"swarm/{index}", robot))
+        return items
+
+
+@dataclass
 class Config:
     """Configuration complète du mat de vision."""
 
@@ -218,6 +286,7 @@ class Config:
     table: TableConfig = field(default_factory=TableConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
+    robots: RobotsConfig = field(default_factory=RobotsConfig)
     objects: list[ObjectConfig] = field(default_factory=list)
     api_host: str = "0.0.0.0"
     api_port: int = 5000
@@ -244,6 +313,8 @@ class Config:
             config.detection = DetectionConfig.from_dict(data["detection"])
         if "calibration" in data:
             config.calibration = CalibrationConfig.from_dict(data["calibration"])
+        if "robots" in data and data["robots"] is not None:
+            config.robots = RobotsConfig.from_dict(data["robots"])
         if "objects" in data and data["objects"] is not None:
             config.objects = [ObjectConfig.from_dict(o) for o in data["objects"]]
         for key in ("api_host", "api_port", "preview_quality"):
@@ -270,6 +341,11 @@ class Config:
             problems.append("table.roi_mode doit valoir 'table' ou 'markers'")
         if self.calibration.chessboard_cols < 3 or self.calibration.chessboard_rows < 3:
             problems.append("damier trop petit (>= 3x3 coins internes)")
+        if self.robots.our_color and self.robots.our_color not in ("blue", "yellow"):
+            problems.append("robots.our_color doit valoir 'blue' ou 'yellow'")
+        for key, robot in self.robots.targets():
+            if robot.enabled and not robot.host:
+                problems.append(f"robots.{key} : aucune adresse (host) renseignée")
         return problems
 
     # ------------------------------------------------------------------ #

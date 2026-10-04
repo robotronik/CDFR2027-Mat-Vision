@@ -24,6 +24,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -42,6 +43,7 @@ from matvision.config import (  # noqa: E402
     DEFAULT_CONFIG_PATH,
     Config,
     ObjectConfig,
+    RobotsConfig,
     load_config,
 )
 from matvision.geometry import marker_corners_table, normalize_angle_deg  # noqa: E402
@@ -806,6 +808,165 @@ def test_test_mode() -> None:
             engine.shutdown()
 
 
+def _start_fake_robot() -> tuple[Any, dict]:
+    """Petit serveur HTTP simulant l'API REST d'un robot (get_robot/set_strat…)."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    state: dict = {"strategy": "A", "team": 1}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args) -> None:  # silence des logs de test
+            pass
+
+        def _send(self, payload: dict, code: int = 200) -> None:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:  # noqa: N802 (nom imposé par BaseHTTPRequestHandler)
+            if self.path == "/get_robot":
+                self._send(
+                    {
+                        "status": 3,
+                        "team": state["team"],
+                        "score": 0,
+                        "time": 0,
+                        "strategy": state["strategy"],
+                        "runid": 1,
+                    }
+                )
+            elif self.path == "/get_strategies":
+                self._send({"strategies": ["A", "B"]})
+            else:
+                self._send({"message": "inconnu"}, 404)
+
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(length) or b"{}")
+            if self.path == "/set_strat":
+                if body.get("strat") == "CONFLIT":
+                    self._send({"message": "Cannot change the strategy in the current state"}, 400)
+                    return
+                state["strategy"] = body.get("strat", "")
+            elif self.path == "/set_color":
+                state["team"] = int(body.get("color", 0))
+            self._send({"message": "Successfull"})
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, state
+
+
+def test_fleet_api() -> None:
+    """Flotte hors ligne : état, déclarations de position et vue live."""
+    with tempfile.TemporaryDirectory() as tmp:
+        config = make_config(Path(tmp))
+        config.robots = RobotsConfig.from_dict(
+            {
+                "our_color": "blue",
+                "main": {"name": "Principal", "host": "", "port": 80},
+                "hunter": {"name": "Chasseur", "host": "", "port": 80},
+                "swarm": [
+                    {"name": "E1", "host": "", "port": 80},
+                    {"name": "E2", "host": "", "port": 80},
+                ],
+            }
+        )
+        engine = VisionEngine(config, display=False)
+        engine.camera = FakeCamera(build_scene(config))
+        engine.start()
+        try:
+            engine.start_detection()
+            deadline = time.time() + 25.0
+            while time.time() < deadline and not engine.objects()["objects"]:
+                time.sleep(0.05)
+            client = create_app(engine).test_client()
+
+            # État : les quatre cibles sont connues, aucune n'est joignable.
+            fleet = client.get("/fleet").get_json()
+            assert [r["key"] for r in fleet["robots"]] == [
+                "main",
+                "hunter",
+                "swarm/0",
+                "swarm/1",
+            ], fleet["robots"]
+            assert all(r["online"] is False for r in fleet["robots"])
+            assert fleet["our_color"] == "blue", fleet
+            assert len(client.get("/fleet/strategies").get_json()["robots"]) == 4
+
+            # Cible inconnue et couleur invalide : refusées proprement.
+            assert client.post("/fleet/inconnu/strategy", json={"strat": "x"}).status_code == 404
+            assert client.post("/fleet/main/color", json={"color": 9}).status_code == 400
+
+            # Le chasseur (sans tag) déclare sa position et reçoit les objets.
+            response = client.post(
+                "/fleet/report", json={"robot": "hunter", "x": 100.0, "y": -200.0, "a": 45.0}
+            )
+            assert response.status_code == 200, response.get_json()
+            reported = response.get_json()
+            assert reported["position"]["x"] == 100.0, reported
+            assert any(obj["id"] == 13 for obj in reported["objects"]), reported["objects"]
+
+            live = client.get("/fleet/live").get_json()
+            by_key = {robot["key"]: robot for robot in live["robots"]}
+            assert by_key["hunter"]["x"] == 100.0 and by_key["hunter"]["y"] == -200.0
+            assert len(by_key["hunter"]["path"]) >= 1
+            # Le robot principal est vu par la caméra (tag bleu) comme l'adverse (jaune).
+            assert by_key["main"]["x"] is not None
+            assert by_key["main"]["source"] == "camera"
+            assert any(opponent["id"] == 6 for opponent in live["opponents"]), live["opponents"]
+            assert any(obj["label"] == "element" for obj in live["objects"]), live["objects"]
+
+            # Le robot principal ne déclare pas sa position (il est vu par la caméra).
+            assert client.post("/fleet/report", json={"robot": "main", "x": 1, "y": 2}).status_code == 400
+
+            print("  ok  flotte : état, stratégies, déclarations et vue live")
+        finally:
+            engine.shutdown()
+
+
+def test_fleet_robot_control() -> None:
+    """Pilotage d'un robot joignable : lecture d'état, stratégie et couleur."""
+    server, state = _start_fake_robot()
+    try:
+        port = server.server_address[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(Path(tmp))
+            config.robots = RobotsConfig.from_dict(
+                {"main": {"name": "Principal", "host": "127.0.0.1", "port": port}}
+            )
+            engine = VisionEngine(config, display=False)
+            client = create_app(engine).test_client()
+
+            fleet = client.get("/fleet").get_json()
+            main = fleet["robots"][0]
+            assert main["online"] is True, main
+            assert main["strategy"] == "A" and main["color"] == "blue", main
+            assert fleet["our_color"] == "blue"
+
+            listed = client.get("/fleet/strategies").get_json()["robots"][0]
+            assert listed["strategies"] == ["A", "B"], listed
+
+            response = client.post("/fleet/main/strategy", json={"strat": "B"})
+            assert response.status_code == 200 and response.get_json()["ok"] is True
+            assert state["strategy"] == "B", state
+
+            assert client.post("/fleet/main/color", json={"color": 2}).status_code == 200
+            assert state["team"] == 2, state
+
+            # Un refus du robot (ex. changement interdit en course) est relayé.
+            refused = client.post("/fleet/main/strategy", json={"strat": "CONFLIT"})
+            assert refused.status_code == 400, refused.get_json()
+            assert "Cannot change" in refused.get_json()["message"], refused.get_json()
+
+            print("  ok  flotte : pilotage d'un robot (stratégie et couleur)")
+    finally:
+        server.shutdown()
+
+
 # --------------------------------------------------------------------------- #
 TESTS = [
     test_geometry_units,
@@ -822,6 +983,8 @@ TESTS = [
     test_web_interface,
     test_match_mode,
     test_test_mode,
+    test_fleet_api,
+    test_fleet_robot_control,
 ]
 
 

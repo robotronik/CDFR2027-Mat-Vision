@@ -18,6 +18,13 @@
     </div>
   </div>
 
+  <nav class="tabs" id="main-tabs" aria-label="Sections">
+    <button class="tab-btn active" data-tab="strategy">Stratégie</button>
+    <button class="tab-btn" data-tab="live">Live table</button>
+    <button class="tab-btn" data-tab="vision">Vision</button>
+    <button class="tab-btn" data-tab="robot">Robot principal</button>
+  </nav>
+
   <div class="topbar-status">
     <span class="badge" id="mode-badge" data-mode="idle">idle</span>
     <span class="badge badge-test" id="test-badge" hidden>MODE TEST</span>
@@ -26,126 +33,190 @@
   </div>
 </header>
 
-<main class="layout">
+<main class="tab-panels">
 
-  <!-- ---------------------------------------------------------------- -->
-  <section class="card span-2">
-    <div class="card-head">
-      <h2>Aperçu caméra</h2>
-      <div class="card-tools">
-        <label class="toggle">
-          <input type="checkbox" id="stream-toggle" checked>
-          <span>Flux live</span>
-        </label>
-        <label class="select">
-          Résolution
-          <select id="quality-select">
-            <option value="55">basse</option>
-            <option value="75" selected>moyenne</option>
-            <option value="92">haute</option>
-          </select>
-        </label>
-      </div>
+  <!-- ============================================================ STRATÉGIE -->
+  <section class="panel active" id="panel-strategy">
+    <div class="panel-intro">
+      <h2>Stratégies &amp; couleurs</h2>
+      <p class="muted small">
+        La sélection est envoyée directement au robot. L'affichage se met à jour
+        automatiquement si la stratégie ou la couleur change sur le robot.
+      </p>
+      <span class="toast" id="fleet-toast" hidden></span>
     </div>
-
-    <div class="viewer">
-      <img id="stream" alt="Flux vidéo du mat de vision">
-      <div class="viewer-placeholder" id="stream-placeholder" hidden>
-        <p>Flux arrêté</p>
-        <button class="btn" id="stream-resume">Reprendre le flux</button>
-      </div>
-      <div class="hud" id="hud"></div>
-    </div>
-
-    <div class="controls">
-      <button class="btn primary" id="btn-start">▶ Démarrer</button>
-      <button class="btn" id="btn-stop">■ Arrêter</button>
-      <button class="btn" id="btn-reset">↺ Réinitialiser</button>
-      <button class="btn" id="btn-snapshot">⤓ Snapshot</button>
-      <button class="btn danger" id="btn-shutdown"
-              title="Arrête le serveur et libère la caméra">⏻ Arrêter le serveur</button>
-      <span class="toast" id="toast" hidden></span>
+    <div class="strategy-grid" id="strategy-grid">
+      <p class="muted">Chargement de la flotte…</p>
     </div>
   </section>
 
-  <!-- ---------------------------------------------------------------- -->
-  <section class="card">
-    <div class="card-head">
-      <h2 id="map-title">Plan de la table</h2>
-      <span class="muted small" id="map-scale"></span>
+  <!-- ============================================================ LIVE TABLE -->
+  <section class="panel" id="panel-live">
+    <div class="live-layout">
+      <section class="card live-card">
+        <div class="card-head">
+          <h2>Table live</h2>
+          <span class="muted small" id="live-updated">—</span>
+        </div>
+        <div class="live-map-wrap">
+          <canvas id="live-canvas"></canvas>
+          <p class="muted live-empty" id="live-empty" hidden>En attente de positions…</p>
+        </div>
+        <p class="legend" id="live-legend">
+          <span><i class="swatch robot-main"></i>principal</span>
+          <span><i class="swatch robot-hunter"></i>chasseur</span>
+          <span><i class="swatch robot-swarm"></i>essaim</span>
+          <span><i class="swatch robot-opp"></i>adverse</span>
+          <span><i class="swatch object"></i>objets de jeu</span>
+          <span><i class="swatch path"></i>trajectoires</span>
+        </p>
+      </section>
+
+      <aside class="card live-side">
+        <div class="card-head"><h2>Flotte</h2></div>
+        <div id="live-fleet"></div>
+        <div class="card-head" style="margin-top:14px"><h2>Robot adverse</h2></div>
+        <div id="live-opponents" class="muted small">—</div>
+        <div class="card-head" style="margin-top:14px"><h2>Objets de jeu</h2></div>
+        <div id="live-objects" class="muted small">—</div>
+      </aside>
     </div>
-    <div class="map-wrap">
-      <canvas id="map"></canvas>
-    </div>
-    <p class="legend">
-      <span><i class="swatch corner"></i>tags de coin</span>
-      <span><i class="swatch object"></i>objets</span>
-      <span><i class="swatch axis-x"></i>axe x</span>
-      <span><i class="swatch axis-y"></i>axe y</span>
-    </p>
   </section>
 
-  <!-- ---------------------------------------------------------------- -->
-  <section class="card">
-    <div class="card-head">
-      <h2>Objets détectés</h2>
-      <span class="muted small" id="objects-count">0</span>
-    </div>
-    <div class="table-wrap">
-      <table class="data">
-        <thead>
-          <tr><th>Libellé</th><th>Tag</th><th id="th-x">x</th><th id="th-y">y</th><th>a</th></tr>
-        </thead>
-        <tbody id="objects-body">
-          <tr><td colspan="5" class="empty">Aucun objet détecté</td></tr>
-        </tbody>
-      </table>
+  <!-- ================================================================ VISION -->
+  <section class="panel" id="panel-vision">
+    <div class="layout">
+
+      <!-- ---------------------------------------------------------- -->
+      <section class="card span-2">
+        <div class="card-head">
+          <h2>Aperçu caméra</h2>
+          <div class="card-tools">
+            <label class="toggle">
+              <input type="checkbox" id="stream-toggle" checked>
+              <span>Flux live</span>
+            </label>
+            <label class="select">
+              Résolution
+              <select id="quality-select">
+                <option value="55">basse</option>
+                <option value="75" selected>moyenne</option>
+                <option value="92">haute</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="viewer">
+          <img id="stream" alt="Flux vidéo du mat de vision">
+          <div class="viewer-placeholder" id="stream-placeholder" hidden>
+            <p>Flux arrêté</p>
+            <button class="btn" id="stream-resume">Reprendre le flux</button>
+          </div>
+          <div class="hud" id="hud"></div>
+        </div>
+
+        <div class="controls">
+          <button class="btn primary" id="btn-start">▶ Démarrer</button>
+          <button class="btn" id="btn-stop">■ Arrêter</button>
+          <button class="btn" id="btn-reset">↺ Réinitialiser</button>
+          <button class="btn" id="btn-snapshot">⤓ Snapshot</button>
+          <button class="btn danger" id="btn-shutdown"
+                  title="Arrête le serveur et libère la caméra">⏻ Arrêter le serveur</button>
+          <span class="toast" id="toast" hidden></span>
+        </div>
+      </section>
+
+      <!-- ---------------------------------------------------------- -->
+      <section class="card">
+        <div class="card-head">
+          <h2 id="map-title">Plan de la table</h2>
+          <span class="muted small" id="map-scale"></span>
+        </div>
+        <div class="map-wrap">
+          <canvas id="map"></canvas>
+        </div>
+        <p class="legend">
+          <span><i class="swatch corner"></i>tags de coin</span>
+          <span><i class="swatch object"></i>objets</span>
+          <span><i class="swatch axis-x"></i>axe x</span>
+          <span><i class="swatch axis-y"></i>axe y</span>
+        </p>
+      </section>
+
+      <!-- ---------------------------------------------------------- -->
+      <section class="card">
+        <div class="card-head">
+          <h2>Objets détectés</h2>
+          <span class="muted small" id="objects-count">0</span>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr><th>Libellé</th><th>Tag</th><th id="th-x">x</th><th id="th-y">y</th><th>a</th></tr>
+            </thead>
+            <tbody id="objects-body">
+              <tr><td colspan="5" class="empty">Aucun objet détecté</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ---------------------------------------------------------- -->
+      <section class="card">
+        <div class="card-head">
+          <h2>Repère &amp; caméra</h2>
+        </div>
+        <dl class="kv">
+          <div><dt>Mode</dt><dd id="st-mode">—</dd></div>
+          <div><dt>Caméra</dt><dd id="st-camera">—</dd></div>
+          <div><dt>Flux</dt><dd id="st-fps">—</dd></div>
+          <div><dt>Repère table</dt><dd id="st-table">—</dd></div>
+          <div><dt>Inliers</dt><dd id="st-inliers">—</dd></div>
+          <div><dt>Résidu</dt><dd id="st-residual">—</dd></div>
+          <div><dt>Pose caméra</dt><dd id="st-pose">—</dd></div>
+          <div><dt>Intrinsèques</dt><dd id="st-intrinsics">—</dd></div>
+          <div><dt>Images</dt><dd id="st-frames">—</dd></div>
+          <div><dt>Actif depuis</dt><dd id="st-uptime">—</dd></div>
+        </dl>
+        <p class="alert" id="st-error" hidden></p>
+      </section>
+
+      <!-- ---------------------------------------------------------- -->
+      <section class="card span-2">
+        <div class="card-head">
+          <h2>Calibration automatique</h2>
+          <span class="muted small" id="cal-config"></span>
+        </div>
+
+        <div class="progress"><div class="progress-bar" id="cal-bar"></div></div>
+
+        <div class="calibration-row">
+          <button class="btn primary" id="btn-cal-start">Lancer la calibration</button>
+          <button class="btn" id="btn-cal-stop">Annuler</button>
+          <p class="calibration-message" id="cal-message">—</p>
+        </div>
+
+        <dl class="kv kv-3">
+          <div><dt>Statut</dt><dd id="cal-status">idle</dd></div>
+          <div><dt>Vues</dt><dd id="cal-frames">0 / 0</dd></div>
+          <div><dt>Netteté</dt><dd id="cal-sharpness">—</dd></div>
+          <div><dt>Damier</dt><dd id="cal-found">—</dd></div>
+          <div><dt>Erreur</dt><dd id="cal-rms">—</dd></div>
+          <div><dt>fx / fy</dt><dd id="cal-fx">—</dd></div>
+        </dl>
+      </section>
+
     </div>
   </section>
 
-  <!-- ---------------------------------------------------------------- -->
-  <section class="card">
-    <div class="card-head">
-      <h2>Repère &amp; caméra</h2>
+  <!-- ======================================================= ROBOT PRINCIPAL -->
+  <section class="panel" id="panel-robot">
+    <div class="robot-bar">
+      <div class="robot-subtabs" id="robot-subtabs"></div>
+      <span class="muted small" id="robot-hint"></span>
     </div>
-    <dl class="kv">
-      <div><dt>Mode</dt><dd id="st-mode">—</dd></div>
-      <div><dt>Caméra</dt><dd id="st-camera">—</dd></div>
-      <div><dt>Flux</dt><dd id="st-fps">—</dd></div>
-      <div><dt>Repère table</dt><dd id="st-table">—</dd></div>
-      <div><dt>Inliers</dt><dd id="st-inliers">—</dd></div>
-      <div><dt>Résidu</dt><dd id="st-residual">—</dd></div>
-      <div><dt>Pose caméra</dt><dd id="st-pose">—</dd></div>
-      <div><dt>Intrinsèques</dt><dd id="st-intrinsics">—</dd></div>
-      <div><dt>Images</dt><dd id="st-frames">—</dd></div>
-      <div><dt>Actif depuis</dt><dd id="st-uptime">—</dd></div>
-    </dl>
-    <p class="alert" id="st-error" hidden></p>
-  </section>
-
-  <!-- ---------------------------------------------------------------- -->
-  <section class="card span-2">
-    <div class="card-head">
-      <h2>Calibration automatique</h2>
-      <span class="muted small" id="cal-config"></span>
-    </div>
-
-    <div class="progress"><div class="progress-bar" id="cal-bar"></div></div>
-
-    <div class="calibration-row">
-      <button class="btn primary" id="btn-cal-start">Lancer la calibration</button>
-      <button class="btn" id="btn-cal-stop">Annuler</button>
-      <p class="calibration-message" id="cal-message">—</p>
-    </div>
-
-    <dl class="kv kv-3">
-      <div><dt>Statut</dt><dd id="cal-status">idle</dd></div>
-      <div><dt>Vues</dt><dd id="cal-frames">0 / 0</dd></div>
-      <div><dt>Netteté</dt><dd id="cal-sharpness">—</dd></div>
-      <div><dt>Damier</dt><dd id="cal-found">—</dd></div>
-      <div><dt>Erreur</dt><dd id="cal-rms">—</dd></div>
-      <div><dt>fx / fy</dt><dd id="cal-fx">—</dd></div>
-    </dl>
+    <div class="robot-frames" id="robot-frames"></div>
   </section>
 
 </main>
@@ -157,10 +228,15 @@
   <a href="/objects" target="_blank">/objects</a>
   <a href="/table" target="_blank">/table</a>
   <a href="/position" target="_blank">/position</a>
+  <a href="/fleet" target="_blank">/fleet</a>
+  <a href="/fleet/live" target="_blank">/fleet/live</a>
   <a href="/preview" target="_blank">/preview</a>
   <a href="/stream" target="_blank">/stream</a>
 </footer>
 
 <script src="{{ url_for('static', filename='app.js') }}"></script>
+<script src="{{ url_for('static', filename='tabs.js') }}"></script>
+<script src="{{ url_for('static', filename='fleet.js') }}"></script>
+<script src="{{ url_for('static', filename='robot.js') }}"></script>
 </body>
 </html>

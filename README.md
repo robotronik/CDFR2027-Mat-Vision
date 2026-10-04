@@ -21,8 +21,9 @@ web** de pilotage intégrée.
 | 2 | **Calibration automatique** des intrinsèques (damier, sans toucher au clavier) | `matvision/calibration.py`, `calibrate.py` |
 | 3 | **Module vision ArUco** : 4 tags de coin → repère table → objets | `matvision/aruco.py`, `matvision/table.py` |
 | 4 | Relevé des positions une entrée par tag détecté (mm / degrés) | `matvision/vision.py` |
-| 5 | **Interface web** de pilotage (flux live, plan de table, objets, calibration) | `matvision/templates/`, `matvision/static/` |
-| 6 | Générateur de tags, plan de table et damier + vérificateur de tags | `tools/generate_markers.py`, `tools/check_tags.py` |
+| 5 | **Interface web multi-onglets** : stratégie, live table, vision, robot principal | `matvision/templates/`, `matvision/static/` |
+| 6 | **Flotte de robots** : pilotage stratégie/couleur du principal, du chasseur et de l'essaim | `matvision/fleet.py` |
+| 7 | Générateur de tags, plan de table et damier + vérificateur de tags | `tools/generate_markers.py`, `tools/check_tags.py` |
 
 L'image complète n'est **pas** analysée : les 4 tags de coin servent d'abord à
 construire le repère table, puis une **région d'intérêt (ROI)** couvrant toute la
@@ -65,14 +66,19 @@ Mat-CDFR2027/
 │   ├── calibration.py            # intrinsèques : Intrinsics, AutoCalibrator
 │   ├── camera.py                 # webcam USB (cv2.VideoCapture)
 │   ├── config.py                 # dataclasses de configuration
+│   ├── fleet.py                  # flotte de robots (stratégie, couleurs, trajectoires)
 │   ├── geometry.py               # Position, angles, homographie, ROI
 │   ├── table.py                  # repère table (homographie + solvePnP)
 │   ├── overlay.py                # annotations de l'aperçu (tags, axes, HUD)
 │   ├── vision.py                 # moteur (boucle, modes, relevé des objets)
 │   ├── templates/
-│   │   └── index.html            # page de l'interface web
+│   │   └── index.html            # page de l'interface web (4 onglets)
 │   └── static/
-│       ├── app.js                # logique de l'interface (vanilla JS)
+│       ├── app.js                # onglet Vision (aperçu, plan, calibration)
+│       ├── tabs.js               # navigation entre les onglets
+│       ├── fleet.js              # onglets Stratégie et Live table
+│       ├── robot.js              # onglet Robot principal (iframes)
+│       ├── map.svg               # map de l'année (fond de la table live)
 │       └── style.css             # thème sombre
 ├── tools/
 │   ├── generate_markers.py       # tags, plan de table, damier
@@ -400,7 +406,16 @@ xdg-open http://localhost:5000/ui
 ```
 
 L'interface (HTML/CSS/JS **sans aucune dépendance externe**, donc fonctionnelle
-hors ligne) donne accès à :
+hors ligne) est organisée en **quatre onglets** :
+
+| Onglet | Détail |
+|---|---|
+| **Stratégie** | couleur et stratégie du **robot principal**, du **chasseur** et de l'**essaim** (tous les petits robots avec la même stratégie). Relaie vers l'API du robot et se resynchronise automatiquement si la stratégie change sur le robot (§9.4). |
+| **Live table** | vue de dessus : positions et **trajectoires** des robots (principal, chasseur, essaim), **robot adverse** (couleur opposée) et **objets de jeu** détectés par le mat, sur la map de l'année en fond. |
+| **Vision** | interface historique du mat : aperçu caméra, plan de table, objets détectés, repère/caméra, calibration. |
+| **Robot principal** | tous les onglets de l'interface du robot principal (Accueil, Control, Camera, Live Table, Lidar, PAMIs, Logs, Robot) affichés dans des iframes pointant sur son adresse. |
+
+L'onglet **Vision** reprend :
 
 | Élément | Détail |
 |---|---|
@@ -495,6 +510,12 @@ Repères utiles :
 | `GET` | `/calibration/result` | Intrinsèques courantes |
 | `POST` | `/snapshot` | Enregistre l'image courante (`?path=`) |
 | `POST` | `/shutdown` | Arrête le serveur **et le processus** (`501` si non câblé) |
+| `GET` | `/fleet` | État des robots : en ligne, couleur, stratégie, table |
+| `GET` | `/fleet/strategies` | Stratégies disponibles par robot |
+| `POST` | `/fleet/<cible>/strategy` | Change la stratégie (`<cible>` = `main`, `hunter`, `swarm`, `swarm/<i>` ou un nom) |
+| `POST` | `/fleet/<cible>/color` | Change la couleur (`{"color": 1}` bleu, `{"color": 2}` jaune) |
+| `GET` | `/fleet/live` | Positions, trajectoires, adversaire et objets de jeu |
+| `GET`/`POST` | `/fleet/report` | Position déclarée d'un robot sans tag ; renvoie les objets de jeu |
 
 ### Exemples
 
@@ -545,6 +566,21 @@ curl http://192.168.1.50:5000/calibration/status
 curl -X POST http://192.168.1.50:5000/shutdown
 ```
 
+```bash
+# Flotte : état, stratégies disponibles, live
+curl http://192.168.1.50:5000/fleet
+curl http://192.168.1.50:5000/fleet/strategies
+curl http://192.168.1.50:5000/fleet/live
+
+# Changer la stratégie du robot principal, la couleur de l'essaim
+curl -X POST http://192.168.1.50:5000/fleet/main/strategy -H 'Content-Type: application/json' -d '{"strat": "Match"}'
+curl -X POST http://192.168.1.50:5000/fleet/swarm/color   -H 'Content-Type: application/json' -d '{"color": 1}'
+
+# Un petit robot sans tag déclare sa position et reçoit les objets de jeu
+curl -X POST http://192.168.1.50:5000/fleet/report -H 'Content-Type: application/json' \
+     -d '{"robot": "swarm/0", "x": -320.0, "y": 810.0, "a": 90.0}'
+```
+
 ---
 
 ## 9. Réglages utiles (`config/default.json`)
@@ -590,6 +626,71 @@ La Logitech 4K Stream Edition permet `camera.width: 3840`, `camera.height: 2160`
 `detection.draw` puis la résolution — ou ne détectez les tags de coin qu'en
 basse résolution et les objets en pleine résolution.
 
+### Robots (flotte)
+
+La section `robots` décrit le robot principal, le chasseur et l'essaim. Chaque
+robot est piloté via son API REST (`/get_robot`, `/get_strategies`, `/set_strat`,
+`/set_color`) ; un robot sans `host` n'est jamais contacté (aucun appel réseau).
+
+```json
+"robots": {
+  "our_color": "",
+  "request_timeout_s": 0.8,
+  "path_window_s": 30.0,
+  "map_image": "",
+  "main":   { "name": "Principal", "host": "192.168.1.10", "port": 80 },
+  "hunter": { "name": "Chasseur",  "host": "192.168.1.11", "port": 80 },
+  "swarm": [
+    { "name": "Essaim 1", "host": "192.168.1.21", "port": 80 },
+    { "name": "Essaim 2", "host": "192.168.1.22", "port": 80 },
+    { "name": "Essaim 3", "host": "192.168.1.23", "port": 80 }
+  ]
+}
+```
+
+| Clé | Rôle |
+|---|---|
+| `our_color` | `"blue"`/`"yellow"` : couleur de secours si le robot principal est injoignable (sinon lue sur `/get_robot`) |
+| `request_timeout_s` | délai maximal d'un appel à un robot |
+| `path_window_s` | durée de trajectoire conservée pour la table live |
+| `map_image` | image de fond optionnelle (chemin ou URL) ; par défaut `static/map.svg` |
+| `main.tag` | tag ArUco du principal si plusieurs tags de la couleur sont présents (sinon déduit) |
+
+**Qui voit quoi.** Le robot principal et l'adversaire sont vus par la caméra :
+
+* le **principal** est le tag de notre couleur (`blue` → tags 1-5, `yellow` →
+  tags 6-10) ; sa couleur est lue sur `/get_robot` (`team`) ;
+* l'**adversaire** est tout tag de la couleur opposée (si nous sommes bleus, les
+  tags 6-10) ;
+* les **objets de jeu** sont les autres tags déclarés (ex. `element`, tag 13).
+
+Le **chasseur** et l'**essaim** n'ont pas de tag : ils déclarent leur position à
+chaque requête et reçoivent en retour les objets de jeu.
+
+**Contrat pour le chasseur et les petits robots** :
+
+```bash
+curl -X POST http://<ip-mat>:5000/fleet/report \
+     -H 'Content-Type: application/json' \
+     -d '{"robot": "swarm/0", "x": -320.0, "y": 810.0, "a": 90.0}'
+```
+
+`robot` accepte une clé (`main`, `hunter`, `swarm/<i>`), `swarm` (tous) ou le nom
+du robot. La réponse contient `objects` (objets de jeu) et `opponents`
+(adversaires) :
+
+```json
+{
+  "robot": "swarm/0",
+  "our_color": "blue",
+  "opponent_color": "yellow",
+  "objects": [
+    { "id": 13, "label": "element", "x": 705.2, "y": -410.9, "a": 45.3 }
+  ],
+  "opponents": [ { "id": 6, "x": -250.0, "y": -400.0, "a": -75.0 } ]
+}
+```
+
 ---
 
 ## 10. Tests (sans matériel)
@@ -605,8 +706,10 @@ python tests/test_smoke.py
 Couverture : géométrie et conventions d'angle, détection ArUco, homographie du
 repère table et pose caméra, projection des objets en mm/deg, ROI, suivi,
 sérialisation de la calibration, calibration automatique sur damier synthétique,
-toutes les routes de l'API, et l'interface web (page HTML, ressources statiques,
-négociation de contenu, flux MJPEG borné).
+toutes les routes de l'API, l'interface web (page HTML, ressources statiques,
+négociation de contenu, flux MJPEG borné) et la flotte de robots (état,
+stratégies, pilotage d'un robot simulé par un petit serveur HTTP, déclarations
+de position et vue live).
 
 Exemple de sortie :
 
@@ -617,6 +720,8 @@ Exemple de sortie :
   ok  calibration automatique : 8 vues, fx=800.3 (vérité 800), cx=640.8, rms=0.065 px
   ok  moteur + API : 2 objets suivis, aperçu JPEG de 80926 octets, fps 8.0
   ok  interface web : page HTML, ressources statiques, négociation de contenu, flux MJPEG (161976 octets)
+  ok  flotte : état, stratégies, déclarations et vue live
+  ok  flotte : pilotage d'un robot (stratégie et couleur)
 ```
 
 ---

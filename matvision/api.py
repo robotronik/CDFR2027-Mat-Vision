@@ -23,6 +23,7 @@ from typing import Any, Callable
 from flask import Flask, Response, g, jsonify, render_template, request
 
 from . import __version__
+from .fleet import Fleet, FleetError
 from .vision import VisionEngine
 
 log = logging.getLogger(__name__)
@@ -105,6 +106,14 @@ def create_app(
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    def _fleet_call(func: Callable[..., dict], *args: Any) -> Response:
+        try:
+            return _json(func(*args))
+        except FleetError as exc:
+            return _json({"message": exc.message}, exc.status)
+
+    fleet = Fleet(config.robots, engine)
+
     # ------------------------------------------------------------------ #
     # Découverte & interface web
     # ------------------------------------------------------------------ #
@@ -126,6 +135,12 @@ def create_app(
             "GET /calibration/result": "intrinsèques courantes",
             "POST /snapshot": "enregistre l'image courante sur le disque",
             "POST /shutdown": "arrête le serveur et le processus",
+            "GET /fleet": "état des robots (principal, chasseur, essaim)",
+            "GET /fleet/strategies": "stratégies disponibles par robot",
+            "POST /fleet/<cible>/strategy": "change la stratégie (cible = main|hunter|swarm|swarm/<i>)",
+            "POST /fleet/<cible>/color": "change la couleur (mêmes cibles)",
+            "GET /fleet/live": "positions et trajectoires pour la table live",
+            "POST /fleet/report": "position déclarée d'un robot sans tag + objets de jeu",
         }
         if web_ui:
             endpoints.update(
@@ -247,6 +262,52 @@ def create_app(
         if not matches:
             return _json({"message": f"aucun objet pour {key!r}"}, 404)
         return _json({"count": len(matches), "objects": matches})
+
+    # ------------------------------------------------------------------ #
+    # Flotte de robots (principal, chasseur, essaim)
+    # ------------------------------------------------------------------ #
+    @app.get("/fleet")
+    def fleet_status() -> Response:
+        return _json(fleet.status())
+
+    @app.get("/fleet/strategies")
+    def fleet_strategies() -> Response:
+        return _json(fleet.strategies())
+
+    @app.post("/fleet/<path:target>/strategy")
+    def fleet_set_strategy(target: str) -> Response:
+        body = request.get_json(silent=True) or {}
+        name = body.get("strat") or body.get("strategy") or request.args.get("strat")
+        if not name:
+            return _json({"message": "stratégie manquante"}, 400)
+        return _fleet_call(fleet.set_strategy, target, str(name))
+
+    @app.post("/fleet/<path:target>/color")
+    def fleet_set_color(target: str) -> Response:
+        body = request.get_json(silent=True) or {}
+        color = body.get("color", request.args.get("color"))
+        if color is None:
+            return _json({"message": "couleur manquante"}, 400)
+        return _fleet_call(fleet.set_color, target, color)
+
+    @app.get("/fleet/live")
+    def fleet_live() -> Response:
+        return _json(fleet.live())
+
+    @app.route("/fleet/report", methods=["GET", "POST"])
+    def fleet_report() -> Response:
+        """Position déclarée par un robot sans tag ; renvoie les objets de jeu."""
+        body = request.get_json(silent=True) or request.args
+        key = body.get("robot") or body.get("key")
+        if not key:
+            return _json({"message": "robot manquant"}, 400)
+        try:
+            x = float(body["x"])
+            y = float(body["y"])
+            a = float(body.get("a", 0.0))
+        except (KeyError, TypeError, ValueError):
+            return _json({"message": "position invalide (x, y requis)"}, 400)
+        return _fleet_call(fleet.report, str(key), x, y, a)
 
     # ------------------------------------------------------------------ #
     # Aperçu (absent en mode match : aucun encodage JPEG)
