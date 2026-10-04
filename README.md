@@ -697,6 +697,13 @@ du robot. La réponse contient `objects` (objets de jeu) et `opponents`
 }
 ```
 
+**Client du robot principal.** Le programme du robot parle au mat en **HTTP
+(TCP)** (`src/mat/mat.cpp`, cpp-httplib) et attend le mat sur `mat.local:5000`
+(surchargeable à la compilation : `-DMAT_HOST=… -DMAT_PORT=…`). Il appelle
+`GET /start` et `GET /stop` (démarrage/arrêt de la détection) puis
+`GET /fleet/live` en boucle pour récupérer la position de l'adversaire et les
+objets de jeu.
+
 ---
 
 ## 10. Tests (sans matériel)
