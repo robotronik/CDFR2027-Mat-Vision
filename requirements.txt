@@ -1,9 +1,0 @@
-# Dépendances du mat de vision (LattePanda Delta / Ubuntu)
-numpy>=1.24
-opencv-contrib-python>=4.7
-flask>=3.0
-werkzeug>=3.0      # serveur HTTP (dépendance de Flask, utilisée directement)
-flask-cors>=4.0
-
-# Anciens scripts mono-fichier conservés dans legacy/ (detect_aruco.py)
-scipy>=1.10

@@ -52,7 +52,6 @@
     ]
   },
   "detection": {
-    "min_homography_inliers": 12,
     "draw": true
   },
   "calibration": {

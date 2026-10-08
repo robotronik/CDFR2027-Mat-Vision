@@ -1,15 +1,22 @@
 # Mat de vision — Mat-CDFR2027
 
-Mat de vision à base de tags **ArUco** : une caméra fixée sur un mât au-dessus
-d'une table de jeu repère les tags des 4 coins de la table, en déduit le repère
-de la table, puis renvoie la position (x, y, angle) des objets marqués sur le
+Mat de vision à base de tags **ArUco**, écrit en **C++17** avec **OpenCV** : une
+caméra fixée sur un mât au-dessus d'une table de jeu repère les 4 tags de coin de
+la table, en déduit la **pose de la caméra dans le repère de la table**
+(`solvePnP`), puis renvoie la position (x, y, z, angle) des objets marqués sur le
 tapis via une **API REST** accessible sur le réseau local — avec une **interface
 web** de pilotage intégrée.
+
+La position de chaque objet est obtenue par **changement de base** : la pose de
+son tag (calculée par `solvePnP`) est composée avec la pose caméra-table. Il n'y
+a **aucune homographie**.
 
 * **Cible matérielle** : LattePanda Delta (x86, Ubuntu) + webcam USB
   Logitech 4K Stream Edition.
 * **Table** : 2000 mm × 3000 mm ; tags de coin à ±400 mm / ±900 mm du centre.
 * **Sortie** : JSON en millimètres dans le repère table, origine au centre.
+* **Calibration intrinsèque obligatoire** : sans elle, aucune pose (donc aucune
+  position) ne peut être calculée.
 
 ---
 
@@ -17,16 +24,15 @@ web** de pilotage intégrée.
 
 | # | Fonction | Où |
 |---|----------|-----|
-| 1 | **API web** Flask (JSON, CORS, aperçu JPEG, flux MJPEG, supervision) | `matvision/api.py`, `server.py` |
-| 2 | **Calibration automatique** des intrinsèques (damier, sans toucher au clavier) | `matvision/calibration.py`, `calibrate.py` |
-| 3 | **Module vision ArUco** : 4 tags de coin → repère table → objets | `matvision/aruco.py`, `matvision/table.py` |
-| 4 | Relevé des positions une entrée par tag détecté (mm / degrés) | `matvision/vision.py` |
-| 5 | **Interface web multi-onglets** : stratégie, live table, vision, robot principal | `matvision/templates/`, `matvision/static/` |
-| 6 | **Flotte de robots** : pilotage stratégie/couleur du principal, du chasseur et de l'essaim | `matvision/fleet.py` |
-| 7 | Générateur de tags, plan de table et damier + vérificateur de tags | `tools/generate_markers.py`, `tools/check_tags.py` |
+| 1 | **API web** (JSON, CORS, aperçu JPEG, flux MJPEG, supervision) cpp-httplib | `src/api.cpp`, `src/main_server.cpp` |
+| 2 | **Calibration automatique** des intrinsèques (damier, sans toucher au clavier) | `src/calibration.cpp`, `src/main_calibrate.cpp` |
+| 3 | **Module vision ArUco** : 4 tags de coin → pose caméra (`solvePnP`) → objets | `src/aruco.cpp`, `src/table.cpp` |
+| 4 | Relevé des positions une entrée par tag détecté (mm / degrés, par changement de base) | `src/vision.cpp` |
+| 5 | **Interface web multi-onglets** : stratégie, live table, vision, robot principal | `web/` |
+| 6 | **Flotte de robots** : pilotage stratégie/couleur du principal, du chasseur et de l'essaim | `src/fleet.cpp` |
 
 L'image complète n'est **pas** analysée : les 4 tags de coin servent d'abord à
-construire le repère table, puis une **région d'intérêt (ROI)** couvrant toute la
+estimer la pose caméra, puis une **région d'intérêt (ROI)** couvrant toute la
 surface de jeu ; la détection des objets n'est faite qu'à l'intérieur de cette
 zone (`table.roi_mode`, voir §9).
 
@@ -39,15 +45,16 @@ flowchart LR
     CAM["Webcam USB<br/>Logitech 4K Stream"] --> ENG["VisionEngine<br/>(une seule boucle)"]
     ENG --> AR["ArucoDetector<br/>détection des tags"]
     AR --> CORN["4 tags de coin"]
-    CORN --> TAB["TableLocalization<br/>homographie image→table<br/>+ pose caméra (solvePnP)"]
-    TAB --> ROI["Masque ROI"]
+    CORN --> POSE["Pose caméra dans le repère table<br/>solvePnP (intrinsèques requises)"]
+    POSE --> ROI["Masque ROI"]
     ROI --> AR2["Détection des objets"]
-    AR2 --> MAP["Projection en mm<br/>via homographie"]
+    AR2 --> TAG["Pose de chaque tag<br/>solvePnP"]
+    TAG --> MAP["Changement de base<br/>caméra → table"]
     MAP --> OUT["Position en mm / degrés<br/>repère table"]
-    OUT --> API["API Flask"]
+    OUT --> API["API HTTP (cpp-httplib)"]
     API -->|JSON / JPEG / MJPEG| WEB["Interface web<br/>/ui"]
     API -->|JSON| LAN["Réseau local<br/>curl, robot, supervision"]
-    CAL["AutoCalibrator<br/>(damier)"] -.->|intrinsèques| TAB
+    CAL["AutoCalibrator<br/>(damier)"] -.->|intrinsèques| POSE
     WEB -.->|POST /start, /stop,<br/>/calibration/*| API
 ```
 
@@ -55,24 +62,36 @@ flowchart LR
 
 ```
 Mat-CDFR2027/
-├── calibrate.py                  # CLI : calibration auto + contrôle du repère table
-├── server.py                     # CLI : API REST + détection
+├── CMakeLists.txt                # build C++ (OpenCV + cpp-httplib + nlohmann/json)
 ├── config/
 │   └── default.json              # configuration complète (caméra, table, objets…)
 ├── data/                         # calibration et captures (généré)
-├── matvision/
-│   ├── api.py                    # routes Flask (+ interface web)
-│   ├── aruco.py                  # détecteur ArUco + utilitaires
-│   ├── calibration.py            # intrinsèques : Intrinsics, AutoCalibrator
-│   ├── camera.py                 # webcam USB (cv2.VideoCapture)
-│   ├── config.py                 # dataclasses de configuration
-│   ├── fleet.py                  # flotte de robots (stratégie, couleurs, trajectoires)
-│   ├── geometry.py               # Position, angles, homographie, ROI
-│   ├── table.py                  # repère table (homographie + solvePnP)
-│   ├── overlay.py                # annotations de l'aperçu (tags, axes, HUD)
-│   ├── vision.py                 # moteur (boucle, modes, relevé des objets)
-│   ├── templates/
-│   │   └── index.html            # page de l'interface web (4 onglets)
+├── include/matvision/            # en-têtes publics
+│   ├── api.hpp                   # serveur HTTP (routes, aperçu, flux)
+│   ├── aruco.hpp                 # détecteur ArUco + tracé
+│   ├── calibration.hpp           # Intrinsics, AutoCalibrator
+│   ├── camera.hpp                # source d'images (webcam USB, IFrameSource)
+│   ├── config.hpp                # structures de configuration
+│   ├── fleet.hpp                 # flotte de robots
+│   ├── geometry.hpp              # Position, angles, coins de tags, ROI, projection
+│   ├── logger.hpp                # journalisation console
+│   ├── table.hpp                 # pose caméra (solvePnP) + changement de base
+│   └── vision.hpp                # moteur (boucle, modes, relevé des objets)
+├── src/
+│   ├── api.cpp                   # routes + interface web + MJPEG
+│   ├── aruco.cpp
+│   ├── calibration.cpp
+│   ├── camera.cpp
+│   ├── config.cpp
+│   ├── fleet.cpp
+│   ├── geometry.cpp
+│   ├── logger.cpp
+│   ├── table.cpp
+│   ├── vision.cpp
+│   ├── main_server.cpp           # binaire matvision-server
+│   └── main_calibrate.cpp        # binaire matvision-calibrate
+├── web/
+│   ├── index.html                # page de l'interface web (4 onglets)
 │   └── static/
 │       ├── app.js                # onglet Vision (aperçu, plan, calibration)
 │       ├── tabs.js               # navigation entre les onglets
@@ -80,33 +99,62 @@ Mat-CDFR2027/
 │       ├── robot.js              # onglet Robot principal (iframes)
 │       ├── map.svg               # map de l'année (fond de la table live)
 │       └── style.css             # thème sombre
-├── tools/
-│   ├── generate_markers.py       # tags, plan de table, damier
-│   └── check_tags.py             # vérifie/identifie les tags ArUco
 ├── tests/
-│   └── test_smoke.py             # tests de bout en bout sans matériel
-└── legacy/                       # anciens scripts mono-fichier (référence)
+│   └── test_main.cpp             # tests d'intégration sans matériel
+└── third_party/                  # cpp-httplib (HTTP) + nlohmann/json
 ```
 
 ---
 
-## 3. Installation
+## 3. Compilation
+
+Prérequis : un compilateur C++17, **CMake ≥ 3.16** et **OpenCV ≥ 4.7**
+(modules `core`, `imgproc`, `imgcodecs`, `videoio`, `highgui`, `calib3d`,
+`objdetect`, `aruco`). Sur Debian/Ubuntu :
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+sudo apt install build-essential cmake libopencv-dev
 ```
 
-> Sur Debian/Ubuntu récent, si vous préférez les paquets système :
-> `sudo apt install python3-opencv python3-flask python3-numpy`.
-> `opencv-contrib-python` est **obligatoire** : le module `cv2.aruco` n'est pas
-> dans `opencv-python`.
+Les dépendances HTTP/JSON (`cpp-httplib`, `nlohmann/json`) sont **vendorées**
+dans `third_party/` : aucune installation supplémentaire.
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+```
+
+Deux binaires sont produits :
+
+* `build/matvision-server` — API REST + détection ;
+* `build/matvision-calibrate` — calibration intrinsèque et contrôle du repère.
 
 Vérification rapide de la caméra :
 
 ```bash
-python3 -c "from matvision.camera import probe; print(probe(0))"
+./build/matvision-calibrate --check-table --seconds 2   # voit-elle les tags de coin ?
 ```
+
+### 3.1 Configuration de l'éditeur (clangd, IntelliSense)
+
+Sans indication des chemins d'en-têtes, l'éditeur signale
+`'httplib.h' file not found` (et les en-têtes OpenCV) : `third_party/` et
+`include/` ne sont pas des répertoires système.
+
+Le dépôt règle le problème par CMake : `CMAKE_EXPORT_COMPILE_COMMANDS` génère
+`build/compile_commands.json`, qui contient les chemins exacts (`include/`,
+`third_party/`, OpenCV). **clangd le découvre automatiquement** — aucune
+configuration d'éditeur n'est donc nécessaire, il suffit d'avoir configuré CMake
+une fois :
+
+```bash
+cmake -S . -B build
+```
+
+Les fichiers propres à l'éditeur (`.clangd`, `.vscode/settings.json`) sont
+**locaux à cette machine** et ignorés par git (`.gitignore`). Pour l'extension
+Microsoft C/C++, renseignez au besoin `C_Cpp.default.includePath` avec
+`include/`, `third_party/` et `/usr/include/opencv4`.
 
 ---
 
@@ -161,9 +209,10 @@ quel tag de sa plage de couleur :
 | `13` | `element` | élément de jeu : boîte de 320 × 110 × 110 mm, un tag de 100 mm sur chacune de ses faces de 320 × 110 mm |
 
 La position renvoyée est toujours celle du **centre du tag**, exprimée dans le
-repère de la table. Pour l'élément de jeu, le centre du bloc est à l'aplomb du
-tag (l'écart de 55 mm entre le centre de la face et le centre du bloc est
-vertical) : la même formule s'applique donc aux robots et aux éléments.
+repère de la table. `z` est la hauteur mesurée par `solvePnP` : pour un tag posé
+à plat elle vaut **≈ 0 mm**, avec une imprécision de quelques centimètres pour un
+petit tag (la profondeur est la grandeur la moins bien contrainte par `solvePnP`).
+Les coordonnées `x`, `y` et le lacet `a` sont les grandeurs utiles au jeu.
 
 Deux réglages optionnels par tag :
 
@@ -173,12 +222,12 @@ Deux réglages optionnels par tag :
   point autre que le centre du tag. Il tourne avec l'orientation mesurée.
   Défaut `[0, 0]` (centre du tag).
 
-Deux précisions géométriques, utiles au **mode test** (§7.1) :
+Deux précisions géométriques :
 
-* `size` — côté du tag imprimé (mm, défaut `100`) : sert d'échelle apparente ;
-* `box` — dimensions (`length_mm` selon `+x` du tag, `width_mm` selon `+y`,
-  `height_mm` en profondeur) de la boîte d'un élément de jeu, pour le tracé de
-  ses arêtes.
+* `size` — côté du tag imprimé (mm, défaut `100`). **Indispensable** : c'est la
+  taille physique utilisée par `solvePnP` pour retrouver la pose du tag ;
+* `box` — dimensions (`length_mm`, `width_mm`, `height_mm`) de la boîte d'un
+  élément de jeu, conservées à titre descriptif (exposées par `/table`).
 
 L'API regroupe les relevés par **libellé** : un robot bleu en tag `1` et un autre
 en tag `3` apparaissent comme deux entrées sous la clé `blue`. C'est ce qui
@@ -195,41 +244,24 @@ permettra d'exposer `/blue` et `/yellow`.
 
 ## 5. Générer les tags, le plan de table et le damier
 
-```bash
-# Tous les tags de la configuration (coins 20-23, robots 1-10, élément 13)
-python tools/generate_markers.py --sheet
+Les tags se génèrent avec le dictionnaire `DICT_4X4_50` d'OpenCV, par exemple
+avec `cv::aruco::generateImageMarker` (`opencv2/objdetect/aruco_dictionary.hpp`)
+ou n'importe quel générateur ArUco. Imprimez le damier **à 100 %** (« taille
+réelle »), puis mesurez une case pour vérifier la cote avant la calibration.
 
-# Idem en choisissant explicitement les identifiants
-python tools/generate_markers.py --ids 1,6,13,20-23 --sheet
+Identifiants utilisés par ce projet :
 
-# Plan de table à l'échelle 1:4, tags placés à leur position réelle
-python tools/generate_markers.py --plan --plan-scale 0.25
-
-# Damier imprimable à l'échelle 1:1 (300 dpi)
-python tools/generate_markers.py --chessboard --dpi 300
-```
-
-Les fichiers sont écrits dans `data/markers/`. Imprimez le damier **à 100 %**
-(« taille réelle »), puis mesurez une case pour vérifier la cote avant la
-calibration.
+* `20` … `23` — tags des 4 coins de la table ;
+* `1` … `5` — robots bleus, `6` … `10` — robots jaunes ;
+* `13` — élément de jeu.
 
 ### 5.1 Vérifier les tags
 
-```bash
-python tools/check_tags.py                  # contrôle la configuration
-python tools/check_tags.py --identify photo.png   # identifie un tag imprimé
-python tools/check_tags.py --patterns       # affiche le motif binaire de chaque tag
-```
-
-L'outil contrôle que :
-
-* chaque identifiant existe bien dans le dictionnaire (un `id` hors plage passe
-  inaperçu au démarrage et rend l'objet invisible) ;
-* chaque tag se décode correctement, seul et sous dégradation (flou, bruit,
-  compression JPEG, perspective) ;
-* aucune paire de tags n'est trop proche dans le dictionnaire. La « marge » est
-  le nombre de bits qui séparent deux tags : plus elle est grande, moins un tag
-  peut être confondu avec un autre.
+Contrôlez que chaque identifiant existe bien dans le dictionnaire (un `id` hors
+plage passe inaperçu au démarrage et rend l'objet invisible) et que chaque tag
+imprimé se décode correctement, seul et sous dégradation (flou, bruit,
+compression JPEG, perspective). La « marge » entre deux tags — le nombre de bits
+qui les séparent — conditionne le risque de confusion :
 
 Exemple :
 
@@ -245,8 +277,9 @@ Exemple :
   blue     <-> coin     : 4 bits (tags 3 / 20)
 ```
 
-Si un tag imprimé ne se décode pas, `--identify` indique à quel identifiant et
-à quel dictionnaire il correspond réellement.
+Si un tag imprimé ne se décode pas, vérifiez sa taille (≥ ~40 px de côté à la
+résolution d'exploitation), son contraste, et que le dictionnaire correspond bien
+à celui utilisé à l'impression.
 
 > **Mesuré sur ce projet :** les 15 tags configurés décodent correctement et
 > **aucune confusion n'a été observée sur 7 680 essais dégradés** (jusqu'à 34 px
@@ -260,11 +293,13 @@ Si un tag imprimé ne se décode pas, `--identify` indique à quel identifiant e
 
 ### 6.1 Intrinsèques (damier)
 
-Aucune touche à enfoncer : le script capture les vues dès qu'elles sont nettes,
-complètes, correctement cadrées et **suffisamment différentes** de la précédente.
+Aucune touche à enfoncer : le programme capture les vues dès qu'elles sont
+nettes, complètes, correctement cadrées et **suffisamment différentes** de la
+précédente. Présentez le damier **sous plusieurs angles et distances** : les vues
+hors plan sont indispensables pour contraindre la focale.
 
 ```bash
-python calibrate.py --device 0 --frames 20
+./build/matvision-calibrate --device 0 --frames 20
 ```
 
 * `--grid 7 7` : nombre de **coins internes** du damier (défaut 7×7) ;
@@ -273,8 +308,8 @@ python calibrate.py --device 0 --frames 20
 * `--output data/camera_calibration.json`.
 
 Sortie : `data/camera_calibration.json` (matrice intrinsèque + distorsion +
-erreur de reprojection). Les anciens fichiers `data/camera_calibration.yml`
-produits par `legacy/calibrate_camera.py` restent lisibles.
+erreur de reprojection). Un fichier `data/camera_calibration.yml` issu d'une
+calibration OpenCV antérieure reste lisible (compatibilité `cv::FileStorage`).
 
 Critères de capture automatique (réglables dans `calibration`) :
 
@@ -291,7 +326,7 @@ Critères de capture automatique (réglables dans `calibration`) :
 **Non.** La calibration est faite une fois, écrite dans
 `data/camera_calibration.json`, puis **rechargée automatiquement à chaque
 démarrage**. Le moteur ne déclenche jamais de calibration tout seul : elle ne
-part que sur `python calibrate.py` ou `POST /calibration/start`.
+part que sur `matvision-calibrate` ou `POST /calibration/start`.
 
 À refaire uniquement si :
 
@@ -301,102 +336,47 @@ part que sur `python calibrate.py` ou `POST /calibration/start`.
 | **Changement de résolution** (`camera.width/height`) | **oui** ⚠ |
 | Réglage de la mise au point (bague de la webcam) | oui |
 | Changement de caméra, d'objectif ou de zoom numérique | oui |
-| Déplacement du mât, de la table ou des tags de coin | **non** (le repère table est recalculé à chaque image) |
+| Déplacement du mât, de la table ou des tags de coin | **non** (la pose caméra est recalculée à chaque image) |
 
 ⚠️ **Les intrinsèques sont exprimés en pixels** : une calibration faite en
 1920×1080 est fausse pour un flux en 3840×2160. Le moteur détecte cet écart au
 premier image et le signale (`/status` → `intrinsics_warning`, journal, et
 panneau « Repère & caméra » de l'interface web).
 
-Bonne nouvelle : **sans aucune calibration, le mat fonctionne**. Les positions
-des objets (x, y, a) viennent de l'**homographie** des 4 tags de coin, pas des
-intrinsèques. Seule la pose caméra de `/position` (diagnostic) nécessite une
-calibration à jour.
+⚠️ **La calibration est obligatoire** : les positions passent par `solvePnP` (pose
+caméra puis pose de chaque tag). Sans intrinsèques, `/objects` reste vide et
+`/status` renvoie `table.reason` = « calibration intrinsèque requise pour la pose
+caméra ».
 
 ### 6.2 Vérification du repère table
 
 ```bash
-python calibrate.py --check-table
+./build/matvision-calibrate --check-table --seconds 5
 ```
 
-Affiche le nombre de tags de coin détectés, le résidu de l'homographie (mm), le
-nombre d'inliers et la pose de la caméra. Code de retour `0` si les 4 tags sont
-vus et l'homographie stable.
+Affiche le nombre de tags de coin détectés, l'erreur de reprojection (px) et la
+pose de la caméra. Code de retour `0` si les tags de coin sont vus et la pose
+stable.
 
 ---
 
 ## 7. Lancer le serveur
 
 ```bash
-python server.py                  # API sur 0.0.0.0:5000, détection à la demande
-python server.py --autostart      # détection lancée immédiatement
-python server.py --display        # + fenêtre locale d'aperçu
-python server.py --device 1 --width 3840 --height 2160
-python server.py --test           # mode test : détection sans tags de coin
-python server.py --match          # mode match : API JSON seule, sans interface web ni aperçu
+./build/matvision-server                   # API sur 0.0.0.0:5000, détection à la demande
+./build/matvision-server --autostart       # détection lancée immédiatement
+./build/matvision-server --display         # + fenêtre locale d'aperçu
+./build/matvision-server --device 1 --width 3840 --height 2160
 ```
 
 L'API démarre même si la caméra est absente : le moteur retente l'ouverture
 toutes les 2 s et `/health` renvoie alors `ok: false`.
 
-### 7.1 Mode test (sans tags de coin)
+Il n'y a plus qu'**un seul mode de détection** (« classique ») : le moteur cherche
+les 4 tags de coin pour estimer la pose caméra, puis relève les objets. Les
+anciens modes `--test` et `--match` ont été supprimés.
 
-`--test` sert à **vérifier la détection des tags en général**, sans dépendre du
-repère table (donc sans les 4 tags de coin 20-23). Le moteur :
-
-* analyse toute l'image (pas de ROI) et relève **tous** les tags du dictionnaire —
-  les tags non déclarés apparaissent aussi, marqués « non déclaré » ;
-* ne construit pas d'homographie : les positions sont données en **pixels**
-  (`x`, `y` = centre du tag, `a` = angle dans l'image, `+y` vers le bas), avec la
-  taille apparente (`size_px`, `px_per_mm`) → `"frame": "image"` dans
-  `/objects` et `"test_mode": true` dans `/status` ;
-* pour un **élément de jeu** (tag 13), trace les **arêtes de sa boîte**
-  (320 × 110 × 110 mm, tag centré sur une face 320 × 110) dans l'aperçu : la face
-  portant le tag est projetée via l'homographie locale du tag, et le volume
-  complet l'est via `solvePnP` si la calibration intrinsèque correspond à la
-  résolution. `--test` lance la détection automatiquement.
-
-L'interface web signale le mode (« MODE TEST ») et bascule la vue de droite en
-**repère image** : les tags détectés y sont dessinés à leur position en pixels,
-avec le contour de la boîte pour l'élément de jeu.
-
-```bash
-python server.py --test
-curl "http://<ip>:5000/objects"      # { "frame": "image", "test_mode": true, ... }
-```
-
-### 7.2 Mode match (performance)
-
-`--match` privilégie le **débit de traitement** au détriment du confort : tout ce
-qui n'est pas nécessaire au relevé des positions est coupé.
-
-* **interface web désactivée** : plus de page HTML (`/`, `/ui`), plus de fichiers
-  statiques (`/static/…`) ;
-* **sorties image désactivées** : `/preview` et `/stream` ne sont pas servis →
-  aucun encodage JPEG dans la boucle ;
-* **annotations et HUD désactivés** (`detection.draw = false`) : l'image n'est
-  plus recopiée ni dessinée (tags, axes, texte) ;
-* **API JSON intacte** : `/objects`, `/objects/<clé>`, `/status`, `/position`,
-  `/table`, `/config`, `/calibration/*`, `/snapshot` et `/shutdown` restent
-  disponibles ;
-* **démarrage automatique** : pas besoin de `/start`. Le moteur reste en
-  détection **normale** — il cherche les **4 tags de coin** pour construire le
-  repère table (la caméra « se place »), puis relève les objets en millimètres.
-
-`GET /api` renvoie alors `"match_mode": true` et `"ui": null`, et sa section
-`endpoints` ne liste plus les routes web/aperçu. Toute requête vers une route
-désactivée répond `404`.
-
-```bash
-python server.py --match
-curl http://<ip>:5000/api       # { "ui": null, "match_mode": true, ... }
-curl http://<ip>:5000/objects   # positions, sans avoir appelé /start
-```
-
-> À combiner utilement avec un `--width/--height` et une qualité de flux
-> adaptés : le gain vient surtout de la suppression du rendu et du JPEG.
-
-### 7.3 Interface web
+### 7.1 Interface web
 
 Ouvrez simplement `http://<ip-lattepanda>:5000/` (ou `/ui`) dans un navigateur,
 depuis n'importe quelle machine du réseau local :
@@ -436,7 +416,7 @@ Détails techniques utiles :
 * les fichiers statiques ne sont pas mis en cache, pour que les modifications de
   l'interface soient visibles immédiatement après un rechargement.
 
-### 7.4 Arrêter le serveur
+### 7.2 Arrêter le serveur
 
 Trois moyens équivalents, tous **propres** : le moteur est arrêté, la boucle
 vidéo jointe et la caméra libérée avant que le processus ne se termine.
@@ -459,29 +439,28 @@ Le bouton **« Arrêter le serveur »** de l'interface web fait la même chose
 > local. Sur un serveur sans arrêt câblé (par exemple en test), la route répond
 > `501` au lieu d'agir.
 
-### 7.5 Logs console
+### 7.3 Logs console
 
 Tous les messages sont écrits **sur la console** (`stderr`), **jamais dans un
 fichier**. Le niveau par défaut est `INFO` ; `-v/--verbose` passe en `DEBUG`
 pour le détail par image (étapes de détection, requêtes HTTP…).
 
 ```bash
-python server.py -v            # logs détaillés (DEBUG)
-python server.py --match       # bilan perf toutes les 5 s, sans interface web
+./build/matvision-server -v        # logs détaillés (DEBUG)
 ```
 
 Repères utiles :
 
 | Message | Signification |
 |---|---|
-| `Configuration : … (N objets, M tags de coin, dessin=…)` | configuration effective au démarrage |
-| `Caméra prête : … — ouverture + chauffe en X ms` | temps d'ouverture / négociation |
-| `Première image reçue : WxH` | résolution réelle du flux |
-| `Repère table acquis (tags …, N inliers, résidu X mm)` | les tags de coin sont vus |
-| `Repère table perdu : …` | les tags de coin ne sont plus vus |
+| `configuration effective : N objets, M tags de coin, roi=…` | configuration effective au démarrage |
+| `caméra prête : WxH @ F fps (FOURCC)` | résolution réellement négociée |
+| `première image reçue : WxH` | résolution réelle du flux |
+| `repère table acquis (tags=N, résidu X px)` | les tags de coin sont vus et la pose estimée |
+| `repère table perdu : …` | les tags de coin ne sont plus vus |
 | `perf: X fps \| traitement Y ms/image (max Z ms) \| mode=… \| objets=N` | bilan toutes les 5 s |
-| `GET /objects -> 200 en Y ms` | requête API (DEBUG), `WARNING` si > 1 s |
-| `Calibration calculée en X ms (N vues, rms=…)` | fin de calibration |
+| `calibration sur N vues (WxH)...` | début du calcul intrinsèque |
+| `calibration enregistrée dans …` | fichiers intrinsèques écrits |
 
 ---
 
@@ -590,7 +569,6 @@ curl -X POST http://192.168.1.50:5000/fleet/report -H 'Content-Type: application
 | Passer en 4K | `camera.width` = 3840, `camera.height` = 2160 |
 | Fluidité sur LattePanda | `camera.width/height` = 1280×720, `detection.draw` = false |
 | Marge de la ROI | `table.roi_margin_px` |
-| Robustesse du repère table | `detection.min_homography_inliers` ↑ |
 | Annotation de l'aperçu | `detection.draw` |
 
 ### Zone analysée (`table.roi_mode`)
@@ -600,11 +578,11 @@ quadrilatère des tags ne couvre **pas** tout le tapis.
 
 | Valeur | Zone analysée | Quand l'utiliser |
 |---|---|---|
-| `"table"` *(défaut)* | toute la surface de jeu, reconstruite par homographie | les objets peuvent aller près des bords |
+| `"table"` *(défaut)* | toute la surface de jeu, obtenue en projetant les 4 coins de la table avec la pose caméra | les objets peuvent aller près des bords |
 | `"markers"` | quadrilatère des 4 tags de coin (+ marge) | zone de jeu restreinte entre les tags, un peu plus rapide et moins de faux positifs |
 
 Avec `"table"`, un objet posé à x = 520 mm (hors des tags) est bien détecté ;
-avec `"markers"` il est invisible. Vérifiable via `tests/test_smoke.py`.
+avec `"markers"` il est invisible. Vérifiable via `matvision-tests`.
 
 Toute modification de `config/default.json` est prise en compte au démarrage
 suivant. `--config autre.json` permet de gérer plusieurs terrains.
@@ -708,33 +686,37 @@ objets de jeu.
 
 ## 10. Tests (sans matériel)
 
-La suite de tests de fumée génère une scène synthétique (caméra en visée
+La suite de tests d'intégration génère une scène synthétique (caméra en visée
 plongeante, tags de coin et objets) et vérifie toute la chaîne, y compris l'API
 avec une caméra factice :
 
 ```bash
-python tests/test_smoke.py
+cmake --build build -j          # construit aussi matvision-tests
+./build/matvision-tests         # ou : ctest --test-dir build
 ```
 
-Couverture : géométrie et conventions d'angle, détection ArUco, homographie du
-repère table et pose caméra, projection des objets en mm/deg, ROI, suivi,
-sérialisation de la calibration, calibration automatique sur damier synthétique,
-toutes les routes de l'API, l'interface web (page HTML, ressources statiques,
-négociation de contenu, flux MJPEG borné) et la flotte de robots (état,
-stratégies, pilotage d'un robot simulé par un petit serveur HTTP, déclarations
-de position et vue live).
+Couverture : géométrie et conventions d'angle, détection ArUco, **pose caméra par
+`solvePnP`** (sans homographie) et changement de base, positions des objets en
+mm/deg, ROI, sérialisation de la calibration, calibration automatique sur damier
+synthétique, avertissement de résolution, toutes les routes de l'API, l'interface
+web (page HTML, ressources statiques, négociation de contenu, flux MJPEG borné)
+et la flotte de robots (état, stratégies, pilotage d'un robot simulé par un petit
+serveur HTTP, déclarations de position et vue live).
 
 Exemple de sortie :
 
 ```
-  ok  détection ArUco : 6 tags, 0 rejetés ; repere table (residu 1.38 mm, pose a 5.0 mm, erreur 0.770 px)
-  ok  projection des objets en mm et en degrés (erreur < 6 mm, < 3°)
-  ok  ROI : 17% de l'image conservée, objets toujours détectés
-  ok  calibration automatique : 8 vues, fx=800.3 (vérité 800), cx=640.8, rms=0.065 px
-  ok  moteur + API : 2 objets suivis, aperçu JPEG de 80926 octets, fps 8.0
-  ok  interface web : page HTML, ressources statiques, négociation de contenu, flux MJPEG (161976 octets)
-  ok  flotte : état, stratégies, déclarations et vue live
-  ok  flotte : pilotage d'un robot (stratégie et couleur)
+== géométrie ==
+== pose caméra (solvePnP) ==
+== moteur & positions ==
+== intrinsèques (sérialisation) ==
+== avertissement de résolution ==
+== calibration automatique ==
+== API HTTP & flotte ==
+== route /shutdown ==
+
+87/87 vérifications réussies
+OK
 ```
 
 ---
@@ -746,21 +728,8 @@ Exemple de sortie :
 | `impossible d'ouvrir la caméra` | `ls -l /dev/video*`, essayer `--device 1`, vérifier qu'aucune autre appli n'utilise la caméra |
 | Image très sombre / surexposée | fixer l'exposition dans `camera` (`auto_exposure: false`) et éclairer la table |
 | `0 tag de coin détecté` | vérifier le dictionnaire (`DICT_4X4_50`), la taille des tags, l'éclairage, et que le plan de table est bien visible |
-| `homographie instable` | tags corrompus/flous, table mal plane, ou positions `table.markers` erronées |
-| Objets jamais renvoyés | ids absents de `objects`, tags trop petits (voir `minMarkerPerimeterRate`) |
+| `calibration intrinsèque requise` dans `/status` | lancer `matvision-calibrate` : sans intrinsèques, aucune position n'est calculable |
+| `pose caméra imprécise (résidu … px)` | tags de coin corrompus/flous ou positions `table.markers` erronées |
+| Objets jamais renvoyés | ids absents de `objects`, tags trop petits (voir `minMarkerPerimeterRate`), ou `size` de l'objet faux |
 | Latence / fps faible | réduire la résolution, désactiver `detection.draw`, passer en `fourcc: MJPG` |
-| `ModuleNotFoundError: cv2.aruco` | installer `opencv-contrib-python`, pas `opencv-python` |
-
----
-
-## 12. Anciens scripts
-
-La version mono-fichier d'origine (Raspberry Pi / picamera2, `cv2.FileStorage`)
-est conservée dans `legacy/` à titre de référence :
-`detect_aruco.py`, `pi_detect_aruco.py`, `calibrate_camera.py`,
-`pi_calibrate_camera.py`. Elle reste fonctionnelle mais n'est plus maintenue ;
-les nouvelles fonctionnalités se font dans le paquet `matvision`.
-
-`legacy/calibrate_camera.py` produit `data/camera_calibration.yml`, un format
-que `matvision.calibration.load_intrinsics` sait toujours relire : vous pouvez
-donc réutiliser une calibration existante sans recalibrer.
+| Erreur au linkage : `undefined reference to cv::aruco…` | OpenCV sans module contrib : installer `libopencv-dev` (paquets complets) |

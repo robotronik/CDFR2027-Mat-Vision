@@ -9,11 +9,16 @@ __pycache__/*
 .pytest_cache/
 
 # Environnements virtuels
-.venv/*
-venv/*
-env/*
-bin/*
-lib/*
-lib64/*
-include/*
-tools/*
+.venv/
+venv/
+env/
+
+# Build C++
+build/
+
+# Divers
+*.swp
+
+# Configuration d'éditeur, locale à chaque machine
+.clangd
+.vscode/*
