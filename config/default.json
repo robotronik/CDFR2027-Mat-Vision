@@ -1,107 +1,238 @@
 {
-  "camera": {
-    "device": 2,
-    "backend": "v4l2",
-    "width": 1920,
-    "height": 1080,
-    "fps": 30,
-    "fourcc": "MJPG",
-    "buffer_size": 1,
-    "warmup_frames": 5,
-    "auto_exposure": true,
-    "auto_white_balance": true
-  },
+  "api_host": "0.0.0.0",
+  "api_port": 5000,
   "aruco": {
     "dictionary": "DICT_4X4_50",
     "params": {
-      "adaptiveThreshWinSizeMin": 3,
-      "adaptiveThreshWinSizeMax": 23,
-      "adaptiveThreshWinSizeStep": 10,
       "adaptiveThreshConstant": 7,
-      "minMarkerPerimeterRate": 0.02,
+      "adaptiveThreshWinSizeMax": 23,
+      "adaptiveThreshWinSizeMin": 3,
+      "adaptiveThreshWinSizeStep": 10,
+      "cornerRefinementMaxIterations": 30,
+      "cornerRefinementMethod": "CORNER_REFINE_SUBPIX",
+      "cornerRefinementMinAccuracy": 0.1,
+      "cornerRefinementWinSize": 5,
+      "detectInvertedMarker": false,
+      "errorCorrectionRate": 0.6,
+      "markerBorderBits": 1,
+      "maxErroneousBitsInBorderRate": 0.35,
       "maxMarkerPerimeterRate": 4.0,
-      "polygonalApproxAccuracyRate": 0.03,
       "minCornerDistanceRate": 0.05,
       "minDistanceToBorder": 3,
       "minMarkerDistanceRate": 0.03,
-      "cornerRefinementMethod": "CORNER_REFINE_SUBPIX",
-      "cornerRefinementWinSize": 5,
-      "relativeCornerRefinmentWinSize": 0.01,
-      "cornerRefinementMaxIterations": 30,
-      "cornerRefinementMinAccuracy": 0.1,
-      "markerBorderBits": 1,
-      "perspectiveRemovePixelPerCell": 4,
-      "perspectiveRemoveIgnoredMarginPerCell": 0.13,
-      "maxErroneousBitsInBorderRate": 0.35,
+      "minMarkerPerimeterRate": 0.02,
       "minOtsuStdDev": 5.0,
-      "errorCorrectionRate": 0.6,
-      "detectInvertedMarker": false,
+      "perspectiveRemoveIgnoredMarginPerCell": 0.13,
+      "perspectiveRemovePixelPerCell": 4,
+      "polygonalApproxAccuracyRate": 0.03,
+      "relativeCornerRefinmentWinSize": 0.01,
       "useAruco3Detection": true
     }
   },
-  "table": {
-    "width_mm": 2000.0,
-    "height_mm": 3000.0,
-    "roi_mode": "table",
-    "roi_margin_px": 25,
-    "markers": [
-      { "id": 20, "x": -400.0, "y": -900.0, "a": 90.0, "size": 100.0 },
-      { "id": 21, "x": -400.0, "y": 900.0, "a": 90.0, "size": 100.0 },
-      { "id": 22, "x": 400.0, "y": -900.0, "a": 90.0, "size": 100.0 },
-      { "id": 23, "x": 400.0, "y": 900.0, "a": 90.0, "size": 100.0 }
-    ]
+  "calibration": {
+    "border_margin_px": 10,
+    "chessboard_cols": 6,
+    "chessboard_rows": 9,
+    "flags": "CALIB_RATIONAL_MODEL",
+    "intrinsics_file": "data/camera_calibration.json",
+    "max_board_area_ratio": 0.95,
+    "max_capture_seconds": 240.0,
+    "min_board_area_ratio": 0.04,
+    "min_move_ratio": 0.08,
+    "min_sharpness": 60.0,
+    "square_size_mm": 25.8,
+    "target_frames": 20
+  },
+  "camera": {
+    "auto_exposure": true,
+    "auto_white_balance": true,
+    "backend": "v4l2",
+    "buffer_size": 1,
+    "device": 2,
+    "fourcc": "MJPG",
+    "fps": 30,
+    "height": 1080,
+    "warmup_frames": 5,
+    "width": 1920
   },
   "detection": {
     "draw": true
   },
-  "calibration": {
-    "intrinsics_file": "data/camera_calibration.json",
-    "chessboard_cols": 6,
-    "chessboard_rows": 9,
-    "square_size_mm": 25.8,
-    "target_frames": 20,
-    "min_board_area_ratio": 0.04,
-    "max_board_area_ratio": 0.95,
-    "min_sharpness": 60.0,
-    "min_move_ratio": 0.08,
-    "border_margin_px": 10,
-    "max_capture_seconds": 240.0,
-    "flags": "CALIB_RATIONAL_MODEL"
-  },
   "objects": [
-    { "id": 1, "label": "blue", "angle_offset": 0.0, "offset": [0.0, 0.0] },
-    { "id": 2, "label": "blue", "angle_offset": 0.0, "offset": [0.0, 0.0] },
-    { "id": 3, "label": "blue", "angle_offset": 0.0, "offset": [0.0, 0.0] },
-    { "id": 4, "label": "blue", "angle_offset": 0.0, "offset": [0.0, 0.0] },
-    { "id": 5, "label": "blue", "angle_offset": 0.0, "offset": [0.0, 0.0] },
-    { "id": 6, "label": "yellow", "angle_offset": 0.0, "offset": [0.0, 0.0] },
-    { "id": 7, "label": "yellow", "angle_offset": 0.0, "offset": [0.0, 0.0] },
-    { "id": 8, "label": "yellow", "angle_offset": 0.0, "offset": [0.0, 0.0] },
-    { "id": 9, "label": "yellow", "angle_offset": 0.0, "offset": [0.0, 0.0] },
-    { "id": 10, "label": "yellow", "angle_offset": 0.0, "offset": [0.0, 0.0] },
     {
+      "angle_offset": 0.0,
+      "id": 1,
+      "label": "blue",
+      "offset": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "angle_offset": 0.0,
+      "id": 2,
+      "label": "blue",
+      "offset": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "angle_offset": 0.0,
+      "id": 3,
+      "label": "blue",
+      "offset": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "angle_offset": 0.0,
+      "id": 4,
+      "label": "blue",
+      "offset": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "angle_offset": 0.0,
+      "id": 5,
+      "label": "blue",
+      "offset": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "angle_offset": 0.0,
+      "id": 6,
+      "label": "yellow",
+      "offset": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "angle_offset": 0.0,
+      "id": 7,
+      "label": "yellow",
+      "offset": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "angle_offset": 0.0,
+      "id": 8,
+      "label": "yellow",
+      "offset": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "angle_offset": 0.0,
+      "id": 9,
+      "label": "yellow",
+      "offset": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "angle_offset": 0.0,
+      "id": 10,
+      "label": "yellow",
+      "offset": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "angle_offset": 0.0,
+      "box": {
+        "height_mm": 110.0,
+        "length_mm": 320.0,
+        "width_mm": 110.0
+      },
       "id": 13,
       "label": "element",
-      "angle_offset": 0.0,
-      "offset": [0.0, 0.0],
-      "size": 100.0,
-      "box": { "length_mm": 320.0, "width_mm": 110.0, "height_mm": 110.0 }
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "size": 100.0
     }
   ],
+  "preview_quality": 75,
   "robots": {
-    "our_color": "",
-    "request_timeout_s": 0.8,
-    "path_window_s": 30.0,
+    "hunter": {
+      "host": "",
+      "name": "Chasseur",
+      "port": 80
+    },
+    "main": {
+      "host": "192.168.8.108",
+      "name": "Principal",
+      "port": 80
+    },
     "map_image": "",
-    "main": { "name": "Principal", "host": "172.20.10.3", "port": 80 },
-    "hunter": { "name": "Chasseur", "host": "", "port": 80 },
+    "our_color": "",
+    "path_window_s": 30.0,
+    "request_timeout_s": 0.8,
     "swarm": [
-      { "name": "Essaim 1", "host": "", "port": 80 },
-      { "name": "Essaim 2", "host": "", "port": 80 },
-      { "name": "Essaim 3", "host": "", "port": 80 }
+      {
+        "host": "",
+        "name": "Essaim 1",
+        "port": 80
+      },
+      {
+        "host": "",
+        "name": "Essaim 2",
+        "port": 80
+      },
+      {
+        "host": "",
+        "name": "Essaim 3",
+        "port": 80
+      }
     ]
   },
-  "api_host": "0.0.0.0",
-  "api_port": 5000,
-  "preview_quality": 75
+  "table": {
+    "height_mm": 3000.0,
+    "markers": [
+      {
+        "a": 90.0,
+        "id": 20,
+        "size": 100.0,
+        "x": -400.0,
+        "y": -900.0
+      },
+      {
+        "a": 90.0,
+        "id": 21,
+        "size": 100.0,
+        "x": -400.0,
+        "y": 900.0
+      },
+      {
+        "a": 90.0,
+        "id": 22,
+        "size": 100.0,
+        "x": 400.0,
+        "y": -900.0
+      },
+      {
+        "a": 90.0,
+        "id": 23,
+        "size": 100.0,
+        "x": 400.0,
+        "y": 900.0
+      }
+    ],
+    "roi_margin_px": 25,
+    "roi_mode": "table",
+    "width_mm": 2000.0
+  }
 }
