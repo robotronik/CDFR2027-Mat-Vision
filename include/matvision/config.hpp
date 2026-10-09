@@ -140,6 +140,20 @@ struct Config {
   nlohmann::json to_json() const;
 };
 
+/// Applique une nouvelle adresse à un robot de la flotte, en mémoire.
+///
+/// :param key: `main`, `hunter` ou `swarm/<index>`.
+/// :returns: `false` si la clé ne correspond à aucun robot.
+bool apply_robot_host(RobotsConfig& robots, const std::string& key, const std::string& host,
+                      int port);
+
+/// Réécrit `robots.<key>.host/port` dans le fichier de configuration JSON.
+///
+/// Les autres clés du fichier sont préservées. Le fichier est créé s'il n'existe
+/// pas encore. :returns: `false` (avec un message journalisé) en cas d'échec.
+bool set_robot_host_in_config(const std::string& path, const std::string& key,
+                              const std::string& host, int port);
+
 /// Chemin de la configuration par défaut (défauts si le fichier est absent).
 std::string default_config_path();
 /// Charge la configuration depuis un fichier JSON (`path` vide = défaut).

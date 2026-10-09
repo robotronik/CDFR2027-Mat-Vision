@@ -19,6 +19,9 @@ namespace {
 /// Intervalle (secondes) entre deux bilans de performance écrits sur la console.
 constexpr double kPerfLogIntervalS = 5.0;
 
+/// Intervalle minimal entre deux avertissements « repère non défini ».
+constexpr double kTableWarnIntervalS = 5.0;
+
 double steady_seconds() {
   return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch())
       .count();
@@ -170,6 +173,11 @@ void VisionEngine::reload_intrinsics() {
   auto loaded = load_intrinsics(config_.intrinsics_path());
   std::lock_guard<std::mutex> lock(mutex_);
   intrinsics_ = loaded;
+}
+
+void VisionEngine::update_robot_host(const std::string& key, const std::string& host, int port) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  apply_robot_host(config_.robots, key, host, port);
 }
 
 bool VisionEngine::save_frame(const std::string& path) {
@@ -548,14 +556,26 @@ nlohmann::json VisionEngine::locate_object(const ObjectConfig& object, const Mar
 }
 
 void VisionEngine::log_localization(const TableLocalization& localization) {
-  if (localization.ok && !last_table_ok_) {
-    MV_LOGI("repère table acquis (tags=" << localization.used_ids.size() << ", résidu "
-                                         << localization.residual_px << " px)");
-  } else if (!localization.ok && last_table_ok_) {
-    MV_LOGW("repère table perdu : "
-            << (localization.reason.empty() ? "raison inconnue" : localization.reason));
+  if (localization.ok) {
+    if (!last_table_ok_) {
+      MV_LOGI("repère table acquis (tags=" << localization.used_ids.size() << ", résidu "
+                                           << localization.residual_px << " px)");
+    }
+    last_table_ok_ = true;
+    return;
   }
-  last_table_ok_ = localization.ok;
+
+  // Tant que le repère n'est pas défini, on répète la cause (au plus une fois
+  // toutes les 5 s) avec le nombre de tags de coin vus, pour diagnostiquer.
+  const double now = steady_seconds();
+  if (last_table_ok_ || now - last_table_fail_log_s_ >= kTableWarnIntervalS) {
+    MV_LOGW("repère table non défini : "
+            << (localization.reason.empty() ? "raison inconnue" : localization.reason)
+            << " (tags de coin vus " << localization.used_ids.size() << '/'
+            << config_.table.markers.size() << ')');
+    last_table_fail_log_s_ = now;
+  }
+  last_table_ok_ = false;
 }
 
 void VisionEngine::check_intrinsics_resolution(int width, int height) {

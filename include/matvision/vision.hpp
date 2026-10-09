@@ -61,6 +61,9 @@ class VisionEngine {
   nlohmann::json calibration_status();
   void reload_intrinsics();
   bool save_frame(const std::string& path);
+  /// Met à jour l'adresse d'un robot dans la configuration effective (pour que
+  /// `GET /config` reste cohérent avec les changements faits depuis l'interface).
+  void update_robot_host(const std::string& key, const std::string& host, int port);
 
   // -- lectures d'état ------------------------------------------------
   nlohmann::json status();
@@ -106,6 +109,7 @@ class VisionEngine {
   std::string intrinsics_warning_;
   bool frame_size_checked_ = false;
   bool last_table_ok_ = false;
+  double last_table_fail_log_s_ = 0.0;
   bool shut_down_ = false;
 
   nlohmann::json stats_;

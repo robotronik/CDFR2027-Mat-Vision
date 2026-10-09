@@ -39,7 +39,7 @@ struct RobotTarget {
   std::string key;  ///< "main", "hunter" ou "swarm/<index>"
   std::string role;
   std::optional<int> index;
-  const RobotConfig* config = nullptr;
+  RobotConfig config;  ///< copie : reste valable même si la flotte est reconfigurée
 
   std::string name() const;
   /// Un robot sans adresse n'est jamais contacté (aucun appel réseau).
@@ -57,6 +57,9 @@ class Fleet {
   nlohmann::json strategies();
   nlohmann::json set_strategy(const std::string& key, const std::string& strategy);
   nlohmann::json set_color(const std::string& key, const nlohmann::json& color);
+  /// Change l'adresse d'un robot (clé ou nom unique) ; renvoie la nouvelle clé
+  /// résolue pour permettre l'enregistrement dans la configuration.
+  nlohmann::json set_host(const std::string& key, const std::string& host, int port);
   nlohmann::json live();
   nlohmann::json report(const std::string& key, double x, double y, double a = 0.0);
   void clear();
@@ -91,6 +94,7 @@ class Fleet {
   RobotsConfig config_;
   VisionEngine& engine_;
   mutable std::mutex mutex_;
+  mutable std::mutex config_mutex_;
   std::map<std::string, std::pair<double, nlohmann::json>> cache_;
   std::map<std::string, std::deque<PathPoint>> paths_;
   std::map<std::string, nlohmann::json> reports_;

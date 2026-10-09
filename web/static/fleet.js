@@ -107,6 +107,39 @@
       </article>`;
   }
 
+  function hostRowHtml(robot) {
+    const state = stateFor(robot.key);
+    const host = state.host || '';
+    const port = state.port || 80;
+    const roleLabel = robot.role === 'swarm'
+      ? `${GROUP_TITLES.swarm} ${Number.isInteger(robot.index) ? robot.index + 1 : ''}`.trim()
+      : (GROUP_TITLES[robot.role] || robot.role);
+    return `
+      <div class="host-row" data-key="${escapeHtml(robot.key)}">
+        <span class="host-name">${escapeHtml(roleLabel)}</span>
+        <input class="host-input" type="text" value="${escapeHtml(host)}"
+               placeholder="192.168.1.10" spellcheck="false" autocomplete="off"
+               aria-label="adresse IP ${escapeHtml(robot.name)}">
+        <input class="port-input" type="number" min="1" max="65535" value="${port}"
+               aria-label="port ${escapeHtml(robot.name)}">
+        <button class="btn host-save">Enregistrer</button>
+      </div>`;
+  }
+
+  function hostsCard(robots) {
+    if (!robots.length) return '';
+    return `
+      <article class="card strategy-card hosts-card span-all">
+        <div class="robot-head">
+          <div>
+            <div class="robot-title">Adresses des robots</div>
+            <div class="robot-sub">Modifiables à chaud et enregistrées dans le fichier de configuration</div>
+          </div>
+        </div>
+        <div class="host-list">${robots.map(hostRowHtml).join('')}</div>
+      </article>`;
+  }
+
   function strategyCard(role, members) {
     const states = members.map((robot) => stateFor(robot.key));
     const online = states.some((state) => state.online);
@@ -158,6 +191,7 @@
     if (robots.length) cards.push(colorCard(robots));
     GROUPS.filter((role) => groups[role] && groups[role].length)
       .forEach((role) => cards.push(strategyCard(role, groups[role])));
+    if (robots.length) cards.push(hostsCard(robots));
     grid.innerHTML = cards.length
       ? cards.join('')
       : '<p class="muted">Aucun robot configuré. Renseignez la section <code>robots</code> de config/default.json.</p>';
@@ -187,6 +221,25 @@
   async function onStrategyClick(event) {
     const card = event.target.closest('.strategy-card');
     if (!card) return;
+
+    const saveButton = event.target.closest('.host-save');
+    if (saveButton) {
+      const row = saveButton.closest('.host-row');
+      const key = row.dataset.key;
+      const host = row.querySelector('.host-input').value.trim();
+      const port = Number(row.querySelector('.port-input').value) || 80;
+      saveButton.disabled = true;
+      try {
+        await post(`/fleet/${encodeURIComponent(key)}/host`, { host, port });
+        fleetToast('Adresse enregistrée');
+        await loadStrategy(true);
+      } catch (error) {
+        saveButton.disabled = false;
+        fleetToast(error.message, true);
+      }
+      return;
+    }
+
     const target = card.dataset.target;
     const colorButton = event.target.closest('.color-btn');
     const strategyButton = event.target.closest('.strat-btn');

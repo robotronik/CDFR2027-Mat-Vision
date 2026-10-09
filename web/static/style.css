@@ -659,3 +659,32 @@ td.empty { color: var(--text-dim); text-align: center; padding: 18px 0; }
 /* Couleur d'équipe : carte unique pour toute la flotte */
 .span-all { grid-column: 1 / -1; }
 .color-card .color-row { max-width: 460px; }
+
+/* Adresses des robots : édition à chaud depuis l'interface */
+.hosts-card .host-list { display: flex; flex-direction: column; gap: 8px; }
+.host-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(150px, 1.6fr) 92px auto;
+  gap: 8px;
+  align-items: center;
+}
+.host-row .host-name { font-size: 13px; color: var(--text-dim); }
+.host-row .host-input,
+.host-row .port-input {
+  background: var(--bg-elev-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 7px 9px;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  min-width: 0;
+}
+.host-row .host-input:focus,
+.host-row .port-input:focus { outline: none; border-color: var(--accent-strong); }
+.host-row .port-input { text-align: center; }
+
+@media (max-width: 560px) {
+  .host-row { grid-template-columns: 1fr 1fr; }
+  .host-row .host-name { grid-column: 1 / -1; }
+}

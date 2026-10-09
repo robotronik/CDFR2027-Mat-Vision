@@ -44,23 +44,19 @@ std::string lowered(std::string text) {
 }  // namespace
 
 std::string RobotTarget::name() const {
-  const std::string value = config != nullptr ? config->name : std::string();
-  return value.empty() ? key : value;
+  return config.name.empty() ? key : config.name;
 }
 
-bool RobotTarget::configured() const {
-  return config != nullptr && !config->host.empty() && config->enabled;
-}
+bool RobotTarget::configured() const { return !config.host.empty() && config.enabled; }
 
-std::string RobotTarget::base_url() const {
-  return config != nullptr ? config->base_url() : std::string();
-}
+std::string RobotTarget::base_url() const { return config.base_url(); }
 
 Fleet::Fleet(const RobotsConfig& config, VisionEngine& engine)
     : config_(config), engine_(engine) {}
 
 std::vector<RobotTarget> Fleet::targets() const {
   std::vector<RobotTarget> result;
+  std::lock_guard<std::mutex> lock(config_mutex_);
   for (const auto& [key, robot] : config_.targets()) {
     RobotTarget target;
     target.key = key;
@@ -69,7 +65,7 @@ std::vector<RobotTarget> Fleet::targets() const {
     if (slash != std::string::npos) {
       target.index = std::stoi(key.substr(slash + 1));
     }
-    target.config = robot;
+    target.config = *robot;
     result.push_back(target);
   }
   return result;
@@ -159,8 +155,8 @@ nlohmann::json Fleet::fetch_state(const RobotTarget& target) {
             {"role", target.role},
             {"index", target.index.has_value() ? nlohmann::json(target.index.value())
                                                : nlohmann::json(nullptr)},
-            {"host", target.config->host},
-            {"port", target.config->port},
+            {"host", target.config.host},
+            {"port", target.config.port},
             {"configured", false},
             {"online", false},
             {"error", "adresse non renseignée"}};
@@ -181,8 +177,8 @@ nlohmann::json Fleet::fetch_state(const RobotTarget& target) {
                           {"index", target.index.has_value()
                                         ? nlohmann::json(target.index.value())
                                         : nlohmann::json(nullptr)},
-                          {"host", target.config->host},
-                          {"port", target.config->port},
+                          {"host", target.config.host},
+                          {"port", target.config.port},
                           {"configured", true}};
   try {
     const nlohmann::json robot = request(target.base_url(), "/get_robot");
@@ -314,6 +310,29 @@ nlohmann::json Fleet::set_color(const std::string& key, const nlohmann::json& co
   return apply(key, "/set_color", {{"color", color_id}});
 }
 
+nlohmann::json Fleet::set_host(const std::string& key, const std::string& host, int port) {
+  const auto targets_list = resolve(key);
+  if (targets_list.size() != 1) {
+    throw FleetError("précisez un seul robot (clé ou nom)", 400);
+  }
+  const std::string resolved = targets_list.front().key;
+  if (port <= 0) {
+    port = targets_list.front().config.port;
+  }
+  {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    if (!apply_robot_host(config_, resolved, host, port)) {
+      throw FleetError("robot inconnu : '" + key + "'", 404);
+    }
+  }
+  invalidate(resolved);
+  MV_LOGI("adresse de " << resolved << " mise à jour : " << host << ':' << port);
+  return {{"key", resolved},
+          {"name", targets_list.front().name()},
+          {"host", host},
+          {"port", port}};
+}
+
 nlohmann::json Fleet::apply(const std::string& key, const std::string& path,
                             const nlohmann::json& payload) {
   const auto targets_list = resolve(key);
@@ -376,11 +395,10 @@ nlohmann::json Fleet::main_position(const std::vector<nlohmann::json>& objects,
     }
   }
   for (const auto& target : targets()) {
-    if (target.key != "main" || target.config == nullptr ||
-        !target.config->tag.has_value()) {
+    if (target.key != "main" || !target.config.tag.has_value()) {
       continue;
     }
-    const int tag = target.config->tag.value();
+    const int tag = target.config.tag.value();
     for (const auto& candidate : candidates) {
       if (candidate.value("id", -1) == tag) {
         return candidate;

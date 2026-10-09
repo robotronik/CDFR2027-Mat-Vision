@@ -206,6 +206,103 @@ std::vector<std::pair<std::string, const RobotConfig*>> RobotsConfig::targets() 
   return items;
 }
 
+bool apply_robot_host(RobotsConfig& robots, const std::string& key, const std::string& host,
+                      int port) {
+  if (key == "main") {
+    if (!robots.main.has_value()) {
+      return false;
+    }
+    robots.main->host = host;
+    robots.main->port = port;
+    return true;
+  }
+  if (key == "hunter") {
+    if (!robots.hunter.has_value()) {
+      return false;
+    }
+    robots.hunter->host = host;
+    robots.hunter->port = port;
+    return true;
+  }
+  const std::string prefix = "swarm/";
+  if (key.rfind(prefix, 0) == 0) {
+    const std::string index_text = key.substr(prefix.size());
+    if (!is_all_digits(index_text)) {
+      return false;
+    }
+    const std::size_t index = static_cast<std::size_t>(std::stoul(index_text));
+    if (index >= robots.swarm.size()) {
+      return false;
+    }
+    robots.swarm[index].host = host;
+    robots.swarm[index].port = port;
+    return true;
+  }
+  return false;
+}
+
+bool set_robot_host_in_config(const std::string& path, const std::string& key,
+                              const std::string& host, int port) {
+  if (path.empty()) {
+    return false;
+  }
+  nlohmann::json data = nlohmann::json::object();
+  if (fs::exists(path)) {
+    std::ifstream input(path);
+    if (!input) {
+      MV_LOGE("configuration illisible pour écriture (" << path << ")");
+      return false;
+    }
+    try {
+      input >> data;
+    } catch (const std::exception& exc) {
+      MV_LOGE("configuration JSON invalide, adresse non enregistrée (" << path
+                                                                       << ") : " << exc.what());
+      return false;
+    }
+  }
+  if (!data.is_object()) {
+    data = nlohmann::json::object();
+  }
+  nlohmann::json& robots = data["robots"];
+  if (!robots.is_object()) {
+    robots = nlohmann::json::object();
+  }
+  nlohmann::json* target = nullptr;
+  if (key == "main" || key == "hunter") {
+    target = &robots[key];
+  } else {
+    const std::string prefix = "swarm/";
+    if (key.rfind(prefix, 0) != 0 || !is_all_digits(key.substr(prefix.size()))) {
+      MV_LOGE("clé de robot inconnue pour l'enregistrement : " << key);
+      return false;
+    }
+    const std::size_t index = static_cast<std::size_t>(std::stoul(key.substr(prefix.size())));
+    nlohmann::json& swarm = robots["swarm"];
+    if (!swarm.is_array()) {
+      swarm = nlohmann::json::array();
+    }
+    while (swarm.size() <= index) {
+      swarm.push_back(nlohmann::json::object());
+    }
+    target = &swarm[index];
+  }
+  if (!target->is_object()) {
+    *target = nlohmann::json::object();
+  }
+  (*target)["host"] = host;
+  (*target)["port"] = port;
+
+  std::ofstream output(path);
+  if (!output) {
+    MV_LOGE("impossible d'écrire la configuration (" << path << ")");
+    return false;
+  }
+  output << data.dump(2) << '\n';
+  MV_LOGI("adresse de " << key << " enregistrée dans " << path << " : " << host << ':' << port);
+  return true;
+}
+
 std::string project_root() {
 #ifdef MATVISION_PROJECT_ROOT
   return MATVISION_PROJECT_ROOT;

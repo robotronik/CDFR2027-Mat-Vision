@@ -290,6 +290,16 @@ void test_engine_positions(matvision::Config config, const cv::Mat& scene) {
   }
 
   CHECK(engine->objects("blue")["count"].get<int>() >= 1);
+  {
+    // L'élément de jeu est exposé sous le numéro du tag (13), libellé `element`.
+    bool element_ok = false;
+    for (const auto& item : payload["objects"]) {
+      if (item.value("id", -1) == 13 && item.value("label", std::string()) == "element") {
+        element_ok = true;
+      }
+    }
+    CHECK(element_ok);
+  }
   CHECK(engine->table_info().value("width_mm", 0.0) == 2000.0);
   CHECK(!engine->camera_position()["position"].is_null());
   engine->shutdown();
@@ -470,6 +480,30 @@ class FakeRobot {
   std::thread thread_;
 };
 
+void test_robot_host_config(const std::string& dir) {
+  const std::string path = dir + "/robot_host.json";
+  std::system(("rm -f " + path).c_str());
+
+  // Le fichier est créé s'il n'existe pas et les autres valeurs par défaut.
+  CHECK(matvision::set_robot_host_in_config(path, "main", "10.0.0.1", 8080));
+  CHECK(matvision::set_robot_host_in_config(path, "swarm/1", "10.0.0.2", 81));
+
+  const matvision::Config config = matvision::load_config(path);
+  CHECK(config.robots.main.has_value());
+  CHECK(config.robots.main->host == "10.0.0.1");
+  CHECK(config.robots.main->port == 8080);
+  CHECK(config.robots.swarm.size() >= 2);
+  CHECK(config.robots.swarm[1].host == "10.0.0.2");
+  CHECK(config.robots.swarm[1].port == 81);
+
+  // Mise à jour en mémoire via apply_robot_host.
+  matvision::RobotsConfig robots = config.robots;
+  CHECK(matvision::apply_robot_host(robots, "main", "192.168.0.9", 90));
+  CHECK(robots.main->host == "192.168.0.9");
+  CHECK(!matvision::apply_robot_host(robots, "swarm/9", "x", 1));
+  std::system(("rm -f " + path).c_str());
+}
+
 void test_api(matvision::Config config, const cv::Mat& scene, int robot_port) {
   config.robots.main = matvision::RobotConfig{"Principal", "127.0.0.1", robot_port};
   config.robots.hunter = matvision::RobotConfig{"Chasseur", "127.0.0.1", robot_port};
@@ -514,6 +548,14 @@ void test_api(matvision::Config config, const cv::Mat& scene, int robot_port) {
   const auto by_label = get("/objects/blue");
   CHECK(by_label.value("count", 0) >= 1);
 
+  // Un élément de jeu est identifié par le numéro de son tag (13).
+  const auto element = get("/objects/13");
+  CHECK(element.value("count", 0) >= 1);
+  if (element.value("count", 0) >= 1) {
+    CHECK(element["objects"][0].value("id", -1) == 13);
+    CHECK(element["objects"][0].value("label", std::string()) == "element");
+  }
+
   const auto table = get("/table");
   CHECK(table.value("width_mm", 0.0) == 2000.0);
   CHECK(table["markers"].size() == 4);
@@ -556,9 +598,49 @@ void test_api(matvision::Config config, const cv::Mat& scene, int robot_port) {
   auto set_color = client.Post("/fleet/all/color", R"({"color":1})", "application/json");
   CHECK(set_color && set_color->status == 200);
 
+  // -- adresse d'un robot (mise à jour à chaud) -----------------------
+  auto set_host = client.Post("/fleet/swarm/0/host",
+                              R"({"host":"10.0.0.5","port":8080})", "application/json");
+  CHECK(set_host && set_host->status == 200);
+  if (set_host) {
+    const nlohmann::json payload = nlohmann::json::parse(set_host->body);
+    CHECK(payload.value("key", std::string()) == "swarm/0");
+    CHECK(payload.value("host", std::string()) == "10.0.0.5");
+    CHECK(payload.value("port", 0) == 8080);
+    CHECK(payload.value("saved", true) == false);  // aucun fichier en test
+  }
+  const auto config_after = get("/config");
+  CHECK(config_after["robots"]["swarm"][0]["host"] == "10.0.0.5");
+  CHECK(config_after["robots"]["swarm"][0]["port"] == 8080);
+
+  // Résolution par nom, port conservé si non fourni.
+  auto set_host_named =
+      client.Post("/fleet/Chasseur/host", R"({"host":"127.0.0.1"})", "application/json");
+  CHECK(set_host_named && set_host_named->status == 200);
+  if (set_host_named) {
+    const nlohmann::json payload = nlohmann::json::parse(set_host_named->body);
+    CHECK(payload.value("key", std::string()) == "hunter");
+    CHECK(payload.value("port", 0) == robot_port);
+  }
+  auto bad_host = client.Post("/fleet/main/host", R"({"port":80})", "application/json");
+  CHECK(bad_host && bad_host->status == 400);
+  auto unknown_host = client.Post("/fleet/inexistant/host", R"({"host":"1.2.3.4"})",
+                                  "application/json");
+  CHECK(unknown_host && unknown_host->status == 404);
+
   const auto live = get("/fleet/live");
   CHECK(live.value("our_color", std::string()) == "blue");
   CHECK(live["robots"].size() >= 2);
+  {
+    // Les éléments de jeu relayés aux robots portent le numéro de tag (13).
+    bool has_element = false;
+    for (const auto& object : live["objects"]) {
+      if (object.value("id", -1) == 13 && object.value("label", std::string()) == "element") {
+        has_element = true;
+      }
+    }
+    CHECK(has_element);
+  }
 
   auto report = client.Post("/fleet/report",
                             R"({"robot":"hunter","x":-320.0,"y":810.0,"a":90.0})",
@@ -623,6 +705,8 @@ int main() {
   test_engine_positions(config, scene);
   std::cout << "== intrinsèques (sérialisation) ==\n";
   test_intrinsics_roundtrip(dir);
+  std::cout << "== adresses des robots ==\n";
+  test_robot_host_config(dir);
   std::cout << "== avertissement de résolution ==\n";
   test_intrinsics_resolution_warning(config, scene);
   std::cout << "== calibration automatique ==\n";

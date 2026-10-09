@@ -153,6 +153,7 @@ int main(int argc, char** argv) {
 
   matvision::ApiOptions options;
   options.cors = !args.no_cors;
+  options.config_path = args.config;
   options.on_shutdown = [main_thread]() { pthread_kill(main_thread, SIGUSR1); };
   auto server = matvision::create_api(*engine, options);
 

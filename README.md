@@ -172,19 +172,24 @@ Microsoft C/C++, renseignez au besoin `C_Cpp.default.includePath` avec
 
 | id | x (mm) | y (mm) | a (°) |
 |----|--------|--------|-------|
-| 20 | −400   | −900   | 0     |
-| 21 | −400   | +900   | 0     |
-| 22 | +400   | −900   | 0     |
-| 23 | +400   | +900   | 0     |
+| 20 | −400   | −900   | 90    |
+| 21 | −400   | +900   | 90    |
+| 22 | +400   | −900   | 90    |
+| 23 | +400   | +900   | 90    |
+
+`a` est l'orientation du tag **posé sur le tapis** (et non la direction du
+robot) : il doit correspondre à la rotation physique du tag. Les quatre tags de
+coin de ce tapis sont posés à **90°** ; une erreur de `a` (ou deux tags aux mêmes
+coordonnées) rend la pose inexploitable — voir §11.
 
 Équivalent C du type retourné :
 
 ```c
 const position_t ARUCO_POSITIONS_TABLE[] = {
-    position_t{.x = -400, .y = -900, .a = 0},
-    position_t{.x = -400, .y =  900, .a = 0},
-    position_t{.x =  400, .y = -900, .a = 0},
-    position_t{.x =  400, .y =  900, .a = 0}};
+    position_t{.x = -400, .y = -900, .a = 90},
+    position_t{.x = -400, .y =  900, .a = 90},
+    position_t{.x =  400, .y = -900, .a = 90},
+    position_t{.x =  400, .y =  900, .a = 90}};
 ```
 
 Les objets suivis se déclarent dans `objects` — un robot peut porter n'importe
@@ -390,7 +395,7 @@ hors ligne) est organisée en **quatre onglets** :
 
 | Onglet | Détail |
 |---|---|
-| **Stratégie** | **couleur commune** au principal, au chasseur et à l'essaim (un seul sélecteur), puis une **stratégie par groupe** (le même choix pour tous les petits robots). Relaie vers l'API des robots et se resynchronise automatiquement si la stratégie change sur un robot (§9.4). |
+| **Stratégie** | **couleur commune** au principal, au chasseur et à l'essaim (un seul sélecteur), puis une **stratégie par groupe** (le même choix pour tous les petits robots). Relaie vers l'API des robots et se resynchronise automatiquement si la stratégie change sur un robot (§9.4). La carte **Adresses des robots** permet aussi de modifier à chaud l'IP et le port de chaque robot (§8, `POST /fleet/<cible>/host`), avec enregistrement dans le fichier de configuration. |
 | **Live table** | vue de dessus : positions et **trajectoires** des robots (principal, chasseur, essaim), **robot adverse** (couleur opposée) et **objets de jeu** détectés par le mat, sur la map de l'année en fond. |
 | **Vision** | interface historique du mat : aperçu caméra, plan de table, objets détectés, repère/caméra, calibration. |
 | **Robot principal** | tous les onglets de l'interface du robot principal (Accueil, Control, Camera, Live Table, Lidar, PAMIs, Logs, Robot) affichés dans des iframes pointant sur son adresse. |
@@ -456,8 +461,8 @@ Repères utiles :
 | `configuration effective : N objets, M tags de coin, roi=…` | configuration effective au démarrage |
 | `caméra prête : WxH @ F fps (FOURCC)` | résolution réellement négociée |
 | `première image reçue : WxH` | résolution réelle du flux |
-| `repère table acquis (tags=N, résidu X px)` | les tags de coin sont vus et la pose estimée |
-| `repère table perdu : …` | les tags de coin ne sont plus vus |
+| `repère table acquis (tags=N, résidu X px)` | les tags de coin sont vus et la pose estimée (transition `non défini` → `acquis`) |
+| `repère table non défini : <raison> (tags de coin vus N/M)` | la pose n'est pas exploitable ; la cause exacte (calibration manquante, tags de coin insuffisants, résidu trop élevé…) est répétée au plus toutes les 5 s |
 | `perf: X fps \| traitement Y ms/image (max Z ms) \| mode=… \| objets=N` | bilan toutes les 5 s |
 | `calibration sur N vues (WxH)...` | début du calcul intrinsèque |
 | `calibration enregistrée dans …` | fichiers intrinsèques écrits |
@@ -493,6 +498,7 @@ Repères utiles :
 | `GET` | `/fleet/strategies` | Stratégies disponibles par robot |
 | `POST` | `/fleet/<cible>/strategy` | Change la stratégie (`<cible>` = `main`, `hunter`, `swarm`, `swarm/<i>` ou un nom) |
 | `POST` | `/fleet/<cible>/color` | Change la couleur (`all` = toute la flotte ; `{"color": 1}` bleu, `{"color": 2}` jaune) |
+| `POST` | `/fleet/<cible>/host` | Change l'adresse d'un robot (clé unique ou nom) : `{"host": "192.168.1.10", "port": 80}` ; enregistrée dans le fichier de configuration |
 | `GET` | `/fleet/live` | Positions, trajectoires, adversaire et objets de jeu |
 | `GET`/`POST` | `/fleet/report` | Position déclarée d'un robot sans tag ; renvoie les objets de jeu |
 
@@ -554,6 +560,10 @@ curl http://192.168.1.50:5000/fleet/live
 # Changer la stratégie du principal, la couleur commune à toute l'équipe
 curl -X POST http://192.168.1.50:5000/fleet/main/strategy -H 'Content-Type: application/json' -d '{"strat": "Match"}'
 curl -X POST http://192.168.1.50:5000/fleet/all/color    -H 'Content-Type: application/json' -d '{"color": 1}'
+
+# Changer l'adresse d'un robot (IP et port), enregistrée dans la configuration
+curl -X POST http://192.168.1.50:5000/fleet/hunter/host -H 'Content-Type: application/json' \
+     -d '{"host": "192.168.1.11", "port": 80}'
 
 # Un petit robot sans tag déclare sa position et reçoit les objets de jeu
 curl -X POST http://192.168.1.50:5000/fleet/report -H 'Content-Type: application/json' \
@@ -633,6 +643,14 @@ robot est piloté via son API REST (`/get_robot`, `/get_strategies`, `/set_strat
 | `path_window_s` | durée de trajectoire conservée pour la table live |
 | `map_image` | image de fond optionnelle (chemin ou URL) ; par défaut `static/map.svg` |
 | `main.tag` | tag ArUco du principal si plusieurs tags de la couleur sont présents (sinon déduit) |
+
+**Modifier une adresse à chaud.** Depuis la carte *Adresses des robots* de
+l'onglet **Stratégie**, ou via `POST /fleet/<cible>/host` (voir §8), l'IP et le
+port d'un robot peuvent être changés **sans redémarrer le serveur**. La
+modification est appliquée immédiatement (le cache d'état de ce robot est
+invalidé) puis réécrite dans le fichier de configuration chargé au démarrage
+(`--config`), si bien qu'elle est conservée au redémarrage suivant. Un `host`
+vide remet le robot en « non configuré » (jamais contacté).
 
 **Qui voit quoi.** Le robot principal et l'adversaire sont vus par la caméra :
 
@@ -729,7 +747,8 @@ OK
 | Image très sombre / surexposée | fixer l'exposition dans `camera` (`auto_exposure: false`) et éclairer la table |
 | `0 tag de coin détecté` | vérifier le dictionnaire (`DICT_4X4_50`), la taille des tags, l'éclairage, et que le plan de table est bien visible |
 | `calibration intrinsèque requise` dans `/status` | lancer `matvision-calibrate` : sans intrinsèques, aucune position n'est calculable |
-| `pose caméra imprécise (résidu … px)` | tags de coin corrompus/flous ou positions `table.markers` erronées |
+| `pose caméra imprécise (résidu … px)` | tags de coin corrompus/flous ou positions `table.markers` erronées. La ligne `repère table non défini : …` (toutes les 5 s) donne la cause exacte et le nombre de tags vus |
+| `pose caméra imprécise` avec beaucoup de tags vus mais résidu énorme | deux tags de coin partagent les mêmes coordonnées, ou l'orientation `a` ne correspond pas au tag physique (les quatre tags de ce tapis sont à `a: 90`) |
 | Objets jamais renvoyés | ids absents de `objects`, tags trop petits (voir `minMarkerPerimeterRate`), ou `size` de l'objet faux |
 | Latence / fps faible | réduire la résolution, désactiver `detection.draw`, passer en `fourcc: MJPG` |
 | Erreur au linkage : `undefined reference to cv::aruco…` | OpenCV sans module contrib : installer `libopencv-dev` (paquets complets) |

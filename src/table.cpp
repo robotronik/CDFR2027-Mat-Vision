@@ -117,6 +117,18 @@ TableLocalization localize_table(const MarkerMap& markers, const TableConfig& ta
     std::ostringstream oss;
     oss << result.used_ids.size() << " tag(s) de coin détecté(s) sur " << table.markers.size()
         << " (" << kMinCornerMarkers << " minimum)";
+    oss << " [attendus:";
+    for (const auto& marker : table.markers) {
+      oss << ' ' << marker.id;
+    }
+    oss << " ; vus:";
+    for (const int id : result.used_ids) {
+      oss << ' ' << id;
+    }
+    if (result.used_ids.empty()) {
+      oss << " aucun";
+    }
+    oss << ']';
     result.reason = oss.str();
     MV_LOGD("localize_table : " << result.reason);
     return result;
@@ -149,7 +161,9 @@ TableLocalization localize_table(const MarkerMap& markers, const TableConfig& ta
     }
   }
   if (!solved) {
-    result.reason = "pose caméra non calculable (solvePnP sans solution)";
+    result.reason =
+        "pose caméra non calculable (solvePnP sans solution : tags de coin coplanaires ou "
+        "positions table.markers incohérentes)";
     MV_LOGD("localize_table : " << result.reason);
     return result;
   }

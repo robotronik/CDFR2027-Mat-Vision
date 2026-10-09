@@ -65,6 +65,7 @@ std::unique_ptr<httplib::Server> create_api(VisionEngine& engine, const ApiOptio
   auto server = std::make_unique<httplib::Server>();
   const Config& config = engine.config();
   const std::string web_dir = options.web_dir.empty() ? web_root() : options.web_dir;
+  const std::string config_path = options.config_path;
   auto fleet = std::make_shared<Fleet>(config.robots, engine);
 
   if (options.cors) {
@@ -117,6 +118,7 @@ std::unique_ptr<httplib::Server> create_api(VisionEngine& engine, const ApiOptio
         {"GET /fleet/strategies", "stratégies disponibles par robot"},
         {"POST /fleet/<cible>/strategy", "change la stratégie (main|hunter|swarm|swarm/<i>)"},
         {"POST /fleet/<cible>/color", "change la couleur (mêmes cibles)"},
+        {"GET|POST /fleet/<cible>/host", "change l'adresse d'un robot (host, port)"},
         {"GET /fleet/live", "positions et trajectoires pour la table live"},
         {"POST /fleet/report", "position déclarée d'un robot sans tag + objets de jeu"},
         {"GET /", "interface web (navigateur) ou ce JSON (curl)"},
@@ -309,6 +311,41 @@ std::unique_ptr<httplib::Server> create_api(VisionEngine& engine, const ApiOptio
     const nlohmann::json color = body["color"];
     fleet_call(res, [fleet, target, color]() { return fleet->set_color(target, color); });
   });
+
+  // Changement d'adresse d'un robot (persisté dans le fichier de configuration).
+  auto set_host_handler = [fleet, &engine, config_path, json_response](
+                              const httplib::Request& req, httplib::Response& res) {
+    const std::string target = req.matches[1].str();
+    const nlohmann::json body = body_or_params(req);
+    if (!body.contains("host") || !body["host"].is_string()) {
+      json_response(res, {{"message", "adresse (host) manquante"}}, 400);
+      return;
+    }
+    const std::string host = body["host"].get<std::string>();
+    int port = 0;
+    try {
+      if (body.contains("port") && !body["port"].is_null()) {
+        port = body["port"].is_string() ? std::stoi(body["port"].get<std::string>())
+                                        : body["port"].get<int>();
+      }
+    } catch (const std::exception&) {
+      json_response(res, {{"message", "port invalide"}}, 400);
+      return;
+    }
+    try {
+      nlohmann::json result = fleet->set_host(target, host, port);
+      const std::string key = result.value("key", std::string());
+      const int applied = result.value("port", port);
+      engine.update_robot_host(key, host, applied);
+      result["saved"] = !config_path.empty() &&
+                        set_robot_host_in_config(config_path, key, host, applied);
+      json_response(res, result, 200);
+    } catch (const FleetError& exc) {
+      json_response(res, {{"message", exc.what()}}, exc.status());
+    }
+  };
+  server->Get(R"(/fleet/(.+)/host)", set_host_handler);
+  server->Post(R"(/fleet/(.+)/host)", set_host_handler);
   auto report_handler = [fleet, fleet_call](const httplib::Request& req,
                                             httplib::Response& res) {
     const nlohmann::json body = body_or_params(req);

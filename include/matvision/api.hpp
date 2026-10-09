@@ -23,6 +23,9 @@ struct ApiOptions {
   std::function<void()> on_shutdown;
   /// Répertoire des ressources de l'interface web (défaut : `web/`).
   std::string web_dir;
+  /// Fichier de configuration à réécrire quand l'adresse d'un robot est changée
+  /// depuis l'interface (vide : modification en mémoire seulement).
+  std::string config_path;
 };
 
 /// Construit le serveur HTTP autour d'un :class:`VisionEngine`.
