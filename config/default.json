@@ -1,6 +1,6 @@
 {
   "camera": {
-    "device": 0,
+    "device": 2,
     "backend": "v4l2",
     "width": 1920,
     "height": 1080,
@@ -56,9 +56,9 @@
   },
   "calibration": {
     "intrinsics_file": "data/camera_calibration.json",
-    "chessboard_cols": 11,
-    "chessboard_rows": 8,
-    "square_size_mm": 15,
+    "chessboard_cols": 6,
+    "chessboard_rows": 9,
+    "square_size_mm": 25.8,
     "target_frames": 20,
     "min_board_area_ratio": 0.04,
     "max_board_area_ratio": 0.95,

@@ -24,7 +24,7 @@ struct CameraConfig {
   int fps = 30;
   std::string fourcc = "MJPG";
   int buffer_size = 1;
-  int warmup_frames = 5;
+  int warmup_frames = 5; //TODO what does it mean ?
   bool auto_exposure = true;
   bool auto_white_balance = true;
 

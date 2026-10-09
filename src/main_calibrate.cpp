@@ -10,11 +10,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
-#include <cstring>
 #include <iostream>
 #include <map>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include <opencv2/highgui.hpp>
