@@ -79,6 +79,12 @@ const std::vector<SceneObject> kSceneObjects = {
     {13, 520.0, -700.0, 120.0},
 };
 
+/// Deux éléments de jeu partageant le tag `13` : les deux doivent être relevés.
+const std::vector<SceneObject> kDuplicateSceneObjects = {
+    {13, 450.0, 350.0, 0.0},
+    {13, -450.0, 650.0, 90.0},
+};
+
 cv::Mat camera_matrix() {
   return (cv::Mat_<double>(3, 3) << kFx, 0.0, kWidth / 2.0, 0.0, kFy, kHeight / 2.0, 0.0, 0.0,
           1.0);
@@ -135,7 +141,18 @@ void render_marker(cv::Mat& canvas, const cv::aruco::Dictionary& dictionary, int
   cv::min(canvas, layer, canvas);
 }
 
-cv::Mat build_scene(const matvision::Config& config) {
+/// Taille physique (mm) d'un tag objet, d'après la configuration.
+double object_size(const matvision::Config& config, int id) {
+  for (const auto& object : config.objects) {
+    if (object.id == id) {
+      return object.size;
+    }
+  }
+  return 100.0;
+}
+
+cv::Mat build_scene(const matvision::Config& config,
+                    const std::vector<SceneObject>& scene_objects = kSceneObjects) {
   const cv::aruco::Dictionary dictionary =
       cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50);
   const auto pose = look_at(cv::Vec3d(150.0, -120.0, 2600.0), cv::Vec3d(0.0, 0.0, 0.0));
@@ -144,9 +161,9 @@ cv::Mat build_scene(const matvision::Config& config) {
     render_marker(canvas, dictionary, marker.id, marker.size, marker.x, marker.y, marker.a,
                   pose.first, pose.second);
   }
-  for (const auto& object : kSceneObjects) {
-    render_marker(canvas, dictionary, object.id, 100.0, object.x, object.y, object.angle,
-                  pose.first, pose.second);
+  for (const auto& object : scene_objects) {
+    render_marker(canvas, dictionary, object.id, object_size(config, object.id), object.x,
+                  object.y, object.angle, pose.first, pose.second);
   }
   cv::Mat color;
   cv::cvtColor(canvas, color, cv::COLOR_GRAY2BGR);
@@ -302,6 +319,35 @@ void test_engine_positions(matvision::Config config, const cv::Mat& scene) {
   }
   CHECK(engine->table_info().value("width_mm", 0.0) == 2000.0);
   CHECK(!engine->camera_position()["position"].is_null());
+  engine->shutdown();
+}
+
+void test_engine_duplicate_ids(matvision::Config config, const cv::Mat& scene) {
+  auto engine = std::make_unique<matvision::VisionEngine>(
+      config, false, std::make_unique<FakeFrameSource>(scene));
+  engine->start();
+  engine->start_detection();
+  CHECK(wait_for_objects(*engine, 2, 5.0));
+
+  const nlohmann::json payload = engine->objects();
+  std::vector<nlohmann::json> elements;
+  for (const auto& item : payload["objects"]) {
+    if (item.value("id", -1) == 13) {
+      elements.push_back(item);
+    }
+  }
+  CHECK(elements.size() == kDuplicateSceneObjects.size());
+  for (const auto& expected : kDuplicateSceneObjects) {
+    bool matched = false;
+    for (const auto& item : elements) {
+      if (std::hypot(item.value("x", 0.0) - expected.x,
+                     item.value("y", 0.0) - expected.y) < 20.0) {
+        matched = true;
+        break;
+      }
+    }
+    CHECK(matched);
+  }
   engine->shutdown();
 }
 
@@ -703,6 +749,8 @@ int main() {
   test_table_pose(config, scene);
   std::cout << "== moteur & positions ==\n";
   test_engine_positions(config, scene);
+  std::cout << "== moteur & doublons d'identifiant ==\n";
+  test_engine_duplicate_ids(config, build_scene(config, kDuplicateSceneObjects));
   std::cout << "== intrinsèques (sérialisation) ==\n";
   test_intrinsics_roundtrip(dir);
   std::cout << "== adresses des robots ==\n";

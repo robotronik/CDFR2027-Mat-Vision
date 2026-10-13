@@ -51,28 +51,29 @@ void draw_table_axes(cv::Mat& frame, const TableLocalization& localization,
   cv::circle(frame, origin_px, 5, cv::Scalar(0, 255, 255), cv::FILLED);
 }
 
-void annotate(cv::Mat& frame, const MarkerMap& corner_markers, const MarkerMap& object_markers,
-              const TableLocalization& localization, const std::vector<nlohmann::json>& objects) {
-  MV_LOGD("annotate : " << corner_markers.size() << " tags de coin, " << object_markers.size()
-                        << " tags objets, " << objects.size() << " relevés");
+void annotate(cv::Mat& frame, const MarkerMap& corner_markers,
+              const std::vector<ObjectAnnotation>& objects,
+              const TableLocalization& localization) {
+  MV_LOGD("annotate : " << corner_markers.size() << " tags de coin, " << objects.size()
+                        << " tags objets");
   draw_markers(frame, corner_markers, kCornerColor);
 
-  for (const auto& item : objects) {
-    const int id = item.value("id", -1);
-    const auto it = object_markers.find(id);
-    if (it == object_markers.end()) {
+  for (const auto& detection : objects) {
+    MarkerMap single;
+    single.emplace(detection.id, detection.corners);
+    draw_markers(frame, single, kObjectColor);
+    if (detection.object.is_null()) {
       continue;
     }
-    const cv::Point2f center = marker_center(it->second);
+    const cv::Point2f center = marker_center(detection.corners);
     std::ostringstream oss;
-    oss << item.value("label", std::string()) << " (" << static_cast<int>(item.value("x", 0.0))
-        << ',' << static_cast<int>(item.value("y", 0.0)) << ") "
-        << static_cast<int>(item.value("a", 0.0)) << "deg";
+    oss << detection.object.value("label", std::string()) << " ("
+        << static_cast<int>(detection.object.value("x", 0.0)) << ','
+        << static_cast<int>(detection.object.value("y", 0.0)) << ") "
+        << static_cast<int>(detection.object.value("a", 0.0)) << "deg";
     cv::putText(frame, oss.str(), cv::Point(cvRound(center.x) - 80, cvRound(center.y) - 14),
                 cv::FONT_HERSHEY_SIMPLEX, 0.5, kObjectColor, 1, cv::LINE_AA);
   }
-
-  draw_markers(frame, object_markers, kObjectColor);
 
   if (!localization.ok) {
     cv::putText(frame, localization.reason, cv::Point(10, frame.rows - 44),

@@ -460,12 +460,15 @@ cv::Mat VisionEngine::detect(const cv::Mat& frame) {
   cv::Mat gray;
   cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
 
-  const MarkerMap found = detector_->detect_by_id(gray, cv::Mat(), true);
+  std::vector<int> detected_ids;
+  std::vector<Marker> detected_corners;
+  detector_->detect(gray, detected_ids, detected_corners, nullptr, cv::Mat(), true);
+
   const std::vector<int> corner_ids = config_.table.marker_ids();
   MarkerMap corner_markers;
-  for (const auto& [id, corners] : found) {
-    if (std::find(corner_ids.begin(), corner_ids.end(), id) != corner_ids.end()) {
-      corner_markers[id] = corners;
+  for (std::size_t i = 0; i < detected_ids.size(); ++i) {
+    if (std::find(corner_ids.begin(), corner_ids.end(), detected_ids[i]) != corner_ids.end()) {
+      corner_markers.emplace(detected_ids[i], detected_corners[i]);
     }
   }
 
@@ -480,7 +483,7 @@ cv::Mat VisionEngine::detect(const cv::Mat& frame) {
   log_localization(localization);
 
   std::vector<nlohmann::json> objects;
-  MarkerMap object_markers;
+  std::vector<ObjectAnnotation> annotations;
   if (localization.ok && intr != nullptr) {
     std::vector<std::vector<cv::Point2f>> groups;
     for (const auto& [id, corners] : corner_markers) {
@@ -494,16 +497,32 @@ cv::Mat VisionEngine::detect(const cv::Mat& frame) {
     }
     const cv::Mat mask =
         build_roi_mask(gray.size(), groups, config_.table.roi_margin_px);
-    object_markers = mask.empty() ? found : detector_->detect_by_id(gray, mask, true);
 
-    for (const auto& [id, corners] : object_markers) {
-      const auto it = objects_config_.find(id);
+    // La détection brute conserve les doublons : un même identifiant peut
+    // apparaître plusieurs fois (ex. plusieurs éléments de jeu taggés 13).
+    std::vector<int> object_ids;
+    std::vector<Marker> object_corners;
+    if (mask.empty()) {
+      object_ids = detected_ids;
+      object_corners = detected_corners;
+    } else {
+      detector_->detect(gray, object_ids, object_corners, nullptr, mask, true);
+    }
+
+    annotations.reserve(object_ids.size());
+    for (std::size_t i = 0; i < object_ids.size(); ++i) {
+      ObjectAnnotation annotation;
+      annotation.id = object_ids[i];
+      annotation.corners = object_corners[i];
+      const auto it = objects_config_.find(annotation.id);
       if (it != objects_config_.end()) {
-        nlohmann::json item = locate_object(it->second, corners, localization);
+        nlohmann::json item = locate_object(it->second, annotation.corners, localization);
         if (!item.is_null()) {
           objects.push_back(item);
+          annotation.object = item;
         }
       }
+      annotations.push_back(std::move(annotation));
     }
   }
 
@@ -516,7 +535,7 @@ cv::Mat VisionEngine::detect(const cv::Mat& frame) {
 
   if (config_.detection.draw) {
     cv::Mat canvas = frame.clone();
-    annotate(canvas, corner_markers, object_markers, localization, objects);
+    annotate(canvas, corner_markers, annotations, localization);
     draw_hud(canvas, hud_lines());
     return canvas;
   }

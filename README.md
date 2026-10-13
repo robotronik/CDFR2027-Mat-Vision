@@ -197,12 +197,12 @@ quel tag de sa plage de couleur :
 
 ```json
 "objects": [
-  { "id": 1, "label": "blue", "angle_offset": 0.0, "offset": [0.0, 0.0] },
-  { "id": 2, "label": "blue", "angle_offset": 0.0, "offset": [0.0, 0.0] },
+  { "id": 1, "label": "blue", "angle_offset": 0.0, "offset": [0.0, 0.0], "size": 70.0 },
+  { "id": 2, "label": "blue", "angle_offset": 0.0, "offset": [0.0, 0.0], "size": 70.0 },
   ...                                                               ,
-  { "id": 10, "label": "yellow", "angle_offset": 0.0, "offset": [0.0, 0.0] },
+  { "id": 10, "label": "yellow", "angle_offset": 0.0, "offset": [0.0, 0.0], "size": 70.0 },
   { "id": 13, "label": "element", "angle_offset": 0.0, "offset": [0.0, 0.0],
-    "size": 100.0,
+    "size": 80.0,
     "box": { "length_mm": 320.0, "width_mm": 110.0, "height_mm": 110.0 } }
 ]
 ```
@@ -211,7 +211,13 @@ quel tag de sa plage de couleur :
 |---|---|---|
 | `1` … `5` | `blue` | robots bleus (chaque robot porte l'un de ces tags) |
 | `6` … `10` | `yellow` | robots jaunes |
-| `13` | `element` | élément de jeu : boîte de 320 × 110 × 110 mm, un tag de 100 mm sur chacune de ses faces de 320 × 110 mm |
+| `13` | `element` | élément de jeu : boîte de 320 × 110 × 110 mm, un tag de 80 mm sur chacune de ses faces de 320 × 110 mm |
+
+Les tags `1` … `10` sont des carrés noirs de **70 mm** de côté, imprimés avec une
+**bande blanche de 10 mm** tout autour ; le tag `13` mesure **80 mm**. La bande
+blanche n'est qu'une **marge d'impression** (zone de silence ArUco) : elle
+n'entre pas dans la cote `size`, qui reste le côté du carré noir utilisé par
+`solvePnP`.
 
 La position renvoyée est toujours celle du **centre du tag**, exprimée dans le
 repère de la table. `z` est la hauteur mesurée par `solvePnP` : pour un tag posé
@@ -229,7 +235,8 @@ Deux réglages optionnels par tag :
 
 Deux précisions géométriques :
 
-* `size` — côté du tag imprimé (mm, défaut `100`). **Indispensable** : c'est la
+* `size` — côté du **carré noir** du tag imprimé (mm, défaut `100` ; `70` pour
+  les tags `1` … `10`, `80` pour le tag `13`). **Indispensable** : c'est la
   taille physique utilisée par `solvePnP` pour retrouver la pose du tag ;
 * `box` — dimensions (`length_mm`, `width_mm`, `height_mm`) de la boîte d'un
   élément de jeu, conservées à titre descriptif (exposées par `/table`).
@@ -238,12 +245,18 @@ L'API regroupe les relevés par **libellé** : un robot bleu en tag `1` et un au
 en tag `3` apparaissent comme deux entrées sous la clé `blue`. C'est ce qui
 permettra d'exposer `/blue` et `/yellow`.
 
+Un même identifiant peut être **détecté plusieurs fois** sur la même image
+(plusieurs éléments de jeu taggés `13`, par exemple) : chaque occurrence produit
+sa propre entrée dans `objects` (`x`, `y`, `a` mesurés indépendamment) et son
+propre tracé sur l'aperçu.
+
 > **Tags supportés.** Le dictionnaire `DICT_4X4_50` couvre les identifiants
 > **0 à 49** ; les identifiants `0` à `49` ont exactement le même motif dans
 > `DICT_4X4_100/250/1000` (ces dictionnaires sont emboîtés). Un tout autre
 > dictionnaire (`DICT_5X5_100`, `DICT_APRILTAG_36H11`…) repousse la limite
 > jusqu'à 1000. Le moteur ne conserve toutefois que les tags déclarés ici et
-> dans `table.markers` — **tout autre tag est détecté puis ignoré**.
+> dans `table.markers` — **tout autre tag est détecté puis ignoré**. Plusieurs
+> tags de même identifiant sont tous relevés.
 
 ---
 
@@ -259,6 +272,11 @@ Identifiants utilisés par ce projet :
 * `20` … `23` — tags des 4 coins de la table ;
 * `1` … `5` — robots bleus, `6` … `10` — robots jaunes ;
 * `13` — élément de jeu.
+
+Les tags `1` … `10` sont imprimés à **70 mm** de côté, entourés d'une bande
+blanche de **10 mm** ; le tag `13` mesure **80 mm**. Cette bande blanche est une
+simple marge d'impression : elle n'entre pas dans la cote `size` et n'influence
+pas la détection.
 
 ### 5.1 Vérifier les tags
 
