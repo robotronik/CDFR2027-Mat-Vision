@@ -133,6 +133,7 @@ Un `Makefile` fournit les mêmes commandes en raccourci :
 make build          # configuration + compilation (Release)
 make test           # compilation + tests
 make run            # compilation + serveur
+make run-match      # compilation + serveur en mode match (API seule)
 make calibrate      # compilation + calibration
 BUILD_TYPE=Debug make build
 make clean
@@ -406,6 +407,7 @@ stable.
 ```bash
 ./build/matvision-server                   # API sur 0.0.0.0:5000, détection à la demande
 ./build/matvision-server --autostart       # détection lancée immédiatement
+./build/matvision-server --match           # match : détection seule, API seule (sans aperçu)
 ./build/matvision-server --display         # + fenêtre locale d'aperçu
 ./build/matvision-server --device 1 --width 3840 --height 2160
 ```
@@ -413,9 +415,21 @@ stable.
 L'API démarre même si la caméra est absente : le moteur retente l'ouverture
 toutes les 2 s et `/health` renvoie alors `ok: false`.
 
-Il n'y a plus qu'**un seul mode de détection** (« classique ») : le moteur cherche
-les 4 tags de coin pour estimer la pose caméra, puis relève les objets. Les
-anciens modes `--test` et `--match` ont été supprimés.
+Il n'y a qu'**un seul algorithme de détection** : le moteur cherche les 4 tags de
+coin pour estimer la pose caméra, puis relève les objets. `--match` n'est pas un
+second algorithme mais un **mode d'exécution allégé**, prévu pour les matchs :
+
+| Effet de `--match` | Détail |
+|---|---|
+| annotation et tracé désactivés | `detection.draw = false` (aucun tracé, aucun HUD) |
+| aucune image conservée | le tampon de la caméra n'est plus copié entre deux images |
+| `/preview`, `/stream`, `/snapshot` → `503` | `preview_enabled = false` : plus aucun encodage JPEG possible |
+| détection lancée au démarrage | équivalent à `--autostart` |
+| `--display` ignoré | avertissement au démarrage |
+
+Tout le reste de l'API (`/objects`, `/position`, `/table`, `/status`,
+`/calibration/…`, `/fleet/…`) fonctionne normalement : c'est ce que consomme le
+robot pendant le match. Voir §9 pour le gain mesuré.
 
 ### 7.1 Interface web
 
@@ -521,14 +535,14 @@ Repères utiles :
 | `GET` | `/objects/<clé>` | Objets d'un tag (`36`) ou d'un libellé (`bleu`) |
 | `GET` | `/position` | Pose de la caméra dans le repère table |
 | `GET` | `/table` | Géométrie de la table, tags de coin, objets |
-| `GET` | `/preview` | Dernière image annotée (JPEG, `?quality=`, largeur plafonnée par `preview_max_width`) ; alias `/preview.jpg` |
-| `GET` | `/stream` | Flux MJPEG temps réel (`?fps=`, `?frames=`, `?max_seconds=`) |
+| `GET` | `/preview` | Dernière image annotée (JPEG, `?quality=`, largeur plafonnée par `preview_max_width`) ; alias `/preview.jpg` ; `503` en mode match |
+| `GET` | `/stream` | Flux MJPEG temps réel (`?fps=`, `?frames=`, `?max_seconds=`) ; `503` en mode match |
 | `GET` | `/config` | Configuration effective |
 | `GET`/`POST` | `/calibration/start` | Lance la calibration automatique |
 | `GET` | `/calibration/status` | Progression (vues capturées, message) |
 | `GET`/`POST` | `/calibration/stop` | Annule la calibration ; alias `/calibration/cancel` |
 | `GET` | `/calibration/result` | Intrinsèques courantes |
-| `POST` | `/snapshot` | Enregistre l'image courante (`?path=`) |
+| `POST` | `/snapshot` | Enregistre l'image courante (`?path=`) ; `503` en mode match |
 | `POST` | `/shutdown` | Arrête le serveur **et le processus** (`501` si non câblé) |
 | `GET` | `/fleet` | État des robots : en ligne, couleur, stratégie, table |
 | `GET` | `/fleet/strategies` | Stratégies disponibles par robot |
@@ -618,6 +632,7 @@ curl -X POST http://192.168.1.50:5000/fleet/report -H 'Content-Type: application
 | Annotation de l'aperçu | `detection.draw` |
 | Purge d'images à la lecture | `camera.drain_frames` (0 par défaut, à laisser à 0 avec `buffer_size: 1`) |
 | Taille de l'aperçu JPEG | `preview_max_width` (1280 px par défaut, `0` = pleine résolution) |
+| Couper l'aperçu / le flux | `preview_enabled: false` (ou `--match`, qui coupe aussi l'annotation et démarre la détection) |
 
 ### Zone analysée (`table.roi_mode`)
 
@@ -665,6 +680,19 @@ synthétique 1920×1080 (9 tags) :
 | filtre ROI + pose des tags | ~0,4 ms | appartenance à un polygone (`pointPolygonTest`) |
 | annotation (`detection.draw`) | ~2,7 ms | tracés groupés en un appel par couleur |
 
+Sur la même scène, le coût total par image selon le mode d'exécution :
+
+| Mode | Coût/image | Remarque |
+|---|---|---|
+| défaut (annotation + aperçu) | ~20 ms | |
+| `detection.draw: false` | ~16 ms | plus aucun tracé |
+| **`--match`** | **~15 ms** | ni tracé, ni image conservée, ni encodage |
+
+Les deux dernières lignes comptent l'encodage d'un client qui regarde le flux :
+avec un onglet **Vision** ouvert, c'est ~12 ms de plus par image serveur (thread
+HTTP), en concurrence avec la détection. `--match` supprime complètement ce coût
+puisqu'aucun aperçu n'est produit.
+
 Points importants :
 
 * **une seule passe ArUco** : les détections hors de la zone analysée (§ ci-dessus)
@@ -679,7 +707,9 @@ Points importants :
   par image jetée ;
 * l'aperçu JPEG est réduit à `preview_max_width` avant encodage : c'est l'encodage
   JPEG qui domine le coût d'un `/preview` ou d'un `/stream`, et il est inutile de
-  l'envoyer en pleine résolution à un panneau d'affichage plus petit.
+  l'envoyer en pleine résolution à un panneau d'affichage plus petit ;
+* en mode match (`--match`) l'image n'est même pas conservée : le tampon de la
+  caméra est libéré dès l'image traitée.
 
 Les leviers restants, par ordre d'efficacité, sont donc la **résolution**
 capturée, `detection.draw`, puis les paramètres ArUco (`adaptiveThreshWinSizeStep`,
@@ -792,11 +822,12 @@ cmake --build build -j          # construit aussi matvision-tests
 Couverture : géométrie et conventions d'angle, détection ArUco, **pose caméra par
 `solvePnP`** (sans homographie) et changement de base, positions des objets en
 mm/deg, filtrage par zone analysée (`table` / `markers`), réduction de l'aperçu,
-sérialisation de la calibration, calibration automatique sur damier
-synthétique, avertissement de résolution, toutes les routes de l'API, l'interface
-web (page HTML, ressources statiques, négociation de contenu, flux MJPEG borné)
-et la flotte de robots (état, stratégies, pilotage d'un robot simulé par un petit
-serveur HTTP, déclarations de position et vue live).
+mode match (API seule, sans image conservée), sérialisation de la calibration,
+calibration automatique sur damier synthétique, avertissement de résolution,
+toutes les routes de l'API, l'interface web (page HTML, ressources statiques,
+négociation de contenu, flux MJPEG borné) et la flotte de robots (état,
+stratégies, pilotage d'un robot simulé par un petit serveur HTTP, déclarations de
+position et vue live).
 
 Exemple de sortie :
 

@@ -7,7 +7,7 @@ CMAKE ?= cmake
 CTEST ?= ctest
 
 .DEFAULT_GOAL := build
-.PHONY: build configure test run calibrate clean
+.PHONY: build configure test run run-match calibrate clean
 
 build: configure
 	$(CMAKE) --build $(BUILD_DIR) -j$(JOBS)
@@ -20,6 +20,9 @@ test: build
 
 run: build
 	./$(BUILD_DIR)/matvision-server
+
+run-match: build
+	./$(BUILD_DIR)/matvision-server --match
 
 calibrate: build
 	./$(BUILD_DIR)/matvision-calibrate
