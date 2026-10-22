@@ -213,16 +213,12 @@ std::optional<std::pair<cv::Mat, cv::Mat>> solve_tag_pose(const Marker& corners,
 
   cv::Mat rvec;
   cv::Mat tvec;
+  // IPPE_SQUARE est la solution analytique recommandée pour un tag carré
+  // (4 points coplanaires) : pas besoin d'affinage itératif supplémentaire.
   for (const int flag : {cv::SOLVEPNP_IPPE_SQUARE, cv::SOLVEPNP_ITERATIVE}) {
     try {
       if (cv::solvePnP(object_points, image_points, intrinsics.camera_matrix,
                        intrinsics.dist_coeffs, rvec, tvec, false, flag)) {
-        // Affinage Levenberg-Marquardt à partir de la solution analytique.
-        try {
-          cv::solvePnP(object_points, image_points, intrinsics.camera_matrix,
-                       intrinsics.dist_coeffs, rvec, tvec, true, cv::SOLVEPNP_ITERATIVE);
-        } catch (const cv::Exception&) {
-        }
         return std::make_pair(rvec.reshape(1, 3).clone(), tvec.reshape(1, 3).clone());
       }
     } catch (const cv::Exception& exc) {

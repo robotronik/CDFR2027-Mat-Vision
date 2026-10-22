@@ -48,6 +48,7 @@
     "auto_white_balance": true,
     "backend": "v4l2",
     "buffer_size": 1,
+    "drain_frames": 0,
     "device": 2,
     "fourcc": "MJPG",
     "fps": 30,
@@ -176,6 +177,7 @@
     }
   ],
   "preview_quality": 75,
+  "preview_max_width": 1280,
   "robots": {
     "hunter": {
       "host": "",

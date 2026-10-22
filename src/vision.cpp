@@ -44,13 +44,15 @@ nlohmann::json FrameStats::to_json() const {
           {"last_frame_ts", last_frame_ts},
           {"proc_ms", proc_ms},
           {"proc_ms_max", proc_ms_max},
-          {"last_proc_ms", last_proc_ms}};
+          {"last_proc_ms", last_proc_ms},
+          {"aruco_ms", aruco_ms}};
 }
 
 VisionEngine::VisionEngine(const Config& config, bool display,
                            std::unique_ptr<IFrameSource> camera)
     : config_(config), display_(display) {
   detector_ = std::make_unique<ArucoDetector>(config_.aruco.dictionary, config_.aruco.params);
+  corner_ids_ = config_.table.marker_ids();
   for (const auto& object : config_.objects) {
     objects_config_[object.id] = object;
   }
@@ -285,18 +287,27 @@ nlohmann::json VisionEngine::table_info() {
 }
 
 std::optional<std::vector<unsigned char>> VisionEngine::preview_jpeg(int quality) {
-  cv::Mat frame;
+  cv::Mat preview;
+  int effective_quality = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (latest_frame_.empty()) {
       return std::nullopt;
     }
-    frame = latest_frame_.clone();
+    // Réduction sous verrou : elle évite une copie pleine résolution et reste
+    // bien plus courte que l'encodage JPEG.
+    if (config_.preview_max_width > 0 && latest_frame_.cols > config_.preview_max_width) {
+      const double scale =
+          static_cast<double>(config_.preview_max_width) / latest_frame_.cols;
+      cv::resize(latest_frame_, preview, cv::Size(), scale, scale, cv::INTER_LINEAR);
+    } else {
+      preview = latest_frame_.clone();
+    }
+    effective_quality = quality >= 0 ? quality : config_.preview_quality;
   }
-  const int effective = quality >= 0 ? quality : config_.preview_quality;
   std::vector<unsigned char> buffer;
-  const std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, effective};
-  if (!cv::imencode(".jpg", frame, buffer, params)) {
+  const std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, effective_quality};
+  if (!cv::imencode(".jpg", preview, buffer, params)) {
     return std::nullopt;
   }
   return buffer;
@@ -308,6 +319,7 @@ void VisionEngine::run() {
   double last_perf_log = window_start;
   double proc_ms_sum = 0.0;
   double proc_ms_peak = 0.0;
+  double aruco_ms_sum = 0.0;
 
   while (!stop_requested_.load()) {
     if (!camera_->is_open()) {
@@ -330,7 +342,7 @@ void VisionEngine::run() {
     cv::Mat frame;
     bool ok = false;
     try {
-      ok = camera_->read_latest(frame, 2);
+      ok = camera_->read_latest(frame, config_.camera.drain_frames);
     } catch (const CameraError& exc) {
       std::lock_guard<std::mutex> lock(mutex_);
       error_ = exc.what();
@@ -360,6 +372,8 @@ void VisionEngine::run() {
     }
     const double proc_ms = (steady_seconds() - proc_started) * 1000.0;
     proc_ms_sum += proc_ms;
+    aruco_ms_sum += last_aruco_ms_;
+    last_aruco_ms_ = 0.0;
     proc_ms_peak = std::max(proc_ms_peak, proc_ms);
 
     {
@@ -379,17 +393,20 @@ void VisionEngine::run() {
         stats_.fps = round_to(frames_window / elapsed, 1);
         stats_.proc_ms = round_to(proc_ms_sum / frames_window, 2);
         stats_.proc_ms_max = round_to(proc_ms_peak, 2);
+        stats_.aruco_ms = round_to(aruco_ms_sum / frames_window, 2);
       }
       if (now - last_perf_log >= kPerfLogIntervalS) {
         std::lock_guard<std::mutex> lock(mutex_);
         MV_LOGI("perf: " << stats_.fps << " fps | traitement " << stats_.proc_ms
-                         << " ms/image (max " << stats_.proc_ms_max << " ms) | mode="
-                         << to_string(mode_) << " | objets=" << objects_.size());
+                         << " ms/image (max " << stats_.proc_ms_max << " ms, arUco "
+                         << stats_.aruco_ms << " ms) | mode=" << to_string(mode_)
+                         << " | objets=" << objects_.size());
         last_perf_log = now;
         proc_ms_peak = 0.0;
       }
       frames_window = 0;
       proc_ms_sum = 0.0;
+      aruco_ms_sum = 0.0;
       window_start = now;
     }
 
@@ -407,7 +424,7 @@ void VisionEngine::run() {
   }
 }
 
-cv::Mat VisionEngine::handle_frame(const cv::Mat& frame) {
+cv::Mat VisionEngine::handle_frame(cv::Mat frame) {
   VisionMode mode;
   AutoCalibrator* calibrator = nullptr;
   {
@@ -432,26 +449,27 @@ cv::Mat VisionEngine::handle_frame(const cv::Mat& frame) {
   }
 
   if (config_.detection.draw) {
-    cv::Mat canvas = frame.clone();
-    draw_hud(canvas, hud_lines());
-    return canvas;
+    draw_hud(frame, hud_lines());
   }
   return frame;
 }
 
-cv::Mat VisionEngine::detect(const cv::Mat& frame) {
-  cv::Mat gray;
-  cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+cv::Mat VisionEngine::detect(cv::Mat frame) {
+  // `frame` est un tampon privé (copie faite par la caméra) : l'annotation est
+  // faite en place, sans clone.
+  cv::cvtColor(frame, gray_, cv::COLOR_BGR2GRAY);
 
-  std::vector<int> detected_ids;
-  std::vector<Marker> detected_corners;
-  detector_->detect(gray, detected_ids, detected_corners);
+  const double detect_started = steady_seconds();
+  detected_ids_.clear();
+  detected_corners_.clear();
+  detector_->detect(gray_, detected_ids_, detected_corners_);
+  last_aruco_ms_ = (steady_seconds() - detect_started) * 1000.0;
 
-  const std::vector<int> corner_ids = config_.table.marker_ids();
   MarkerMap corner_markers;
-  for (std::size_t i = 0; i < detected_ids.size(); ++i) {
-    if (std::find(corner_ids.begin(), corner_ids.end(), detected_ids[i]) != corner_ids.end()) {
-      corner_markers.emplace(detected_ids[i], detected_corners[i]);
+  for (std::size_t i = 0; i < detected_ids_.size(); ++i) {
+    if (std::find(corner_ids_.begin(), corner_ids_.end(), detected_ids_[i]) !=
+        corner_ids_.end()) {
+      corner_markers.emplace(detected_ids_[i], detected_corners_[i]);
     }
   }
 
@@ -471,7 +489,10 @@ cv::Mat VisionEngine::detect(const cv::Mat& frame) {
   std::vector<nlohmann::json> objects;
   std::vector<ObjectAnnotation> annotations;
   if (localization.ok && intr != nullptr) {
+    // La ROI est un simple polygone : les détections hors zone sont écartées
+    // après coup, ce qui évite une seconde passe complète du détecteur ArUco.
     std::vector<std::vector<cv::Point2f>> groups;
+    groups.reserve(corner_markers.size() + 1);
     for (const auto& [id, corners] : corner_markers) {
       groups.push_back(corners);
     }
@@ -481,25 +502,18 @@ cv::Mat VisionEngine::detect(const cv::Mat& frame) {
         groups.push_back(quad);
       }
     }
-    const cv::Mat mask =
-        build_roi_mask(gray.size(), groups, config_.table.roi_margin_px);
+    const std::vector<cv::Point2f> roi = build_roi_polygon(groups);
 
     // La détection brute conserve les doublons : un même identifiant peut
     // apparaître plusieurs fois (ex. plusieurs éléments de jeu taggés 13).
-    std::vector<int> object_ids;
-    std::vector<Marker> object_corners;
-    if (mask.empty()) {
-      object_ids = detected_ids;
-      object_corners = detected_corners;
-    } else {
-      detector_->detect(gray, object_ids, object_corners, mask);
-    }
-
-    annotations.reserve(object_ids.size());
-    for (std::size_t i = 0; i < object_ids.size(); ++i) {
+    annotations.reserve(detected_ids_.size());
+    for (std::size_t i = 0; i < detected_ids_.size(); ++i) {
+      if (!point_in_roi(roi, marker_center(detected_corners_[i]), config_.table.roi_margin_px)) {
+        continue;
+      }
       ObjectAnnotation annotation;
-      annotation.id = object_ids[i];
-      annotation.corners = object_corners[i];
+      annotation.id = detected_ids_[i];
+      annotation.corners = detected_corners_[i];
       const auto it = objects_config_.find(annotation.id);
       if (it != objects_config_.end()) {
         nlohmann::json item =
@@ -521,10 +535,8 @@ cv::Mat VisionEngine::detect(const cv::Mat& frame) {
   }
 
   if (config_.detection.draw) {
-    cv::Mat canvas = frame.clone();
-    annotate(canvas, corner_markers, annotations, localization);
-    draw_hud(canvas, hud_lines());
-    return canvas;
+    annotate(frame, corner_markers, annotations, localization);
+    draw_hud(frame, hud_lines());
   }
   return frame;
 }

@@ -47,10 +47,15 @@ std::array<cv::Point2d, 4> marker_corners_table(double cx, double cy, double ang
 /// Centre du marqueur (moyenne des 4 coins).
 cv::Point2f marker_center(const Marker& corners);
 
-/// Masque binaire de la zone de travail (enveloppe convexe des groupes de coins).
-/// Renvoie un `cv::Mat` vide si aucune zone exploitable.
-cv::Mat build_roi_mask(const cv::Size& shape,
-                       const std::vector<std::vector<cv::Point2f>>& groups, int margin_px);
+/// Enveloppe convexe de la zone de travail (groupes de coins réunis).
+///
+/// Renvoie un polygone vide si aucune zone exploitable (moins de 3 points).
+std::vector<cv::Point2f> build_roi_polygon(
+    const std::vector<std::vector<cv::Point2f>>& groups);
+
+/// Vrai si `point` est dans le polygone, ou à moins de `margin_px` de son bord.
+bool point_in_roi(const std::vector<cv::Point2f>& polygon, const cv::Point2f& point,
+                  int margin_px);
 
 /// Projette des points 3D (mm) en pixels.
 ///

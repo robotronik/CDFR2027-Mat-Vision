@@ -24,6 +24,9 @@ struct CameraConfig {
   int fps = 30;
   std::string fourcc = "MJPG";
   int buffer_size = 1;
+  /// Images jetées avant lecture (0 = aucune purge). Inutile avec `buffer_size: 1`,
+  /// coûteux sinon : chaque purge attend une nouvelle image de la caméra.
+  int drain_frames = 0;
   /// Images jetées à l'ouverture pour laisser l'exposition se stabiliser.
   int warmup_frames = 5;
   bool auto_exposure = true;
@@ -33,7 +36,7 @@ struct CameraConfig {
   int device_index() const;
 
   NLOHMANN_DEFINE_TYPE_INTRUSIVE_ONLY_SERIALIZE(CameraConfig, device, backend, width, height, fps,
-                                                fourcc, buffer_size, warmup_frames,
+                                                fourcc, buffer_size, drain_frames, warmup_frames,
                                                 auto_exposure, auto_white_balance)
 };
 
@@ -168,6 +171,8 @@ struct Config {
   std::string api_host = "0.0.0.0";
   int api_port = 5000;
   int preview_quality = 75;
+  /// Largeur maximale de l'aperçu JPEG (0 = pleine résolution).
+  int preview_max_width = 1280;
 
   /// Chemin absolu du fichier de calibration intrinsèque.
   std::string intrinsics_path() const;

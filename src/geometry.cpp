@@ -53,38 +53,35 @@ cv::Point2f marker_center(const Marker& corners) {
   return sum / count;
 }
 
-cv::Mat build_roi_mask(const cv::Size& shape,
-                       const std::vector<std::vector<cv::Point2f>>& groups, int margin_px) {
+std::vector<cv::Point2f> build_roi_polygon(
+    const std::vector<std::vector<cv::Point2f>>& groups) {
   std::vector<cv::Point2f> stacked;
+  std::size_t total = 0;
+  for (const auto& group : groups) {
+    total += group.size();
+  }
+  stacked.reserve(total);
   for (const auto& group : groups) {
     stacked.insert(stacked.end(), group.begin(), group.end());
   }
   if (stacked.size() < 3) {
-    return cv::Mat();
+    return {};
   }
 
   std::vector<cv::Point2f> hull;
   cv::convexHull(stacked, hull);
   if (hull.size() < 3) {
-    return cv::Mat();
+    return {};
   }
+  return hull;
+}
 
-  cv::Mat mask = cv::Mat::zeros(shape, CV_8UC1);
-  std::vector<cv::Point> polygon;
-  polygon.reserve(hull.size());
-  for (const auto& point : hull) {
-    polygon.emplace_back(cv::Point(cvRound(point.x), cvRound(point.y)));
+bool point_in_roi(const std::vector<cv::Point2f>& polygon, const cv::Point2f& point,
+                  int margin_px) {
+  if (polygon.size() < 3) {
+    return true;
   }
-  cv::fillPoly(mask, std::vector<std::vector<cv::Point>>{polygon}, cv::Scalar(255));
-
-  const int margin = std::max(0, margin_px);
-  if (margin > 0) {
-    const int kernel_size = margin * 2 + 1;
-    const cv::Mat kernel = cv::getStructuringElement(
-        cv::MORPH_ELLIPSE, cv::Size(kernel_size, kernel_size));
-    cv::dilate(mask, mask, kernel);
-  }
-  return mask;
+  return cv::pointPolygonTest(polygon, point, true) >= -static_cast<double>(std::max(0, margin_px));
 }
 
 std::vector<cv::Point2f> project_points_3d(const std::vector<cv::Point3d>& points,

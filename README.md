@@ -127,6 +127,17 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
+Un `Makefile` fournit les mêmes commandes en raccourci :
+
+```bash
+make build          # configuration + compilation (Release)
+make test           # compilation + tests
+make run            # compilation + serveur
+make calibrate      # compilation + calibration
+BUILD_TYPE=Debug make build
+make clean
+```
+
 Deux binaires sont produits :
 
 * `build/matvision-server` — API REST + détection ;
@@ -510,7 +521,7 @@ Repères utiles :
 | `GET` | `/objects/<clé>` | Objets d'un tag (`36`) ou d'un libellé (`bleu`) |
 | `GET` | `/position` | Pose de la caméra dans le repère table |
 | `GET` | `/table` | Géométrie de la table, tags de coin, objets |
-| `GET` | `/preview` | Dernière image annotée (JPEG, `?quality=`) ; alias `/preview.jpg` |
+| `GET` | `/preview` | Dernière image annotée (JPEG, `?quality=`, largeur plafonnée par `preview_max_width`) ; alias `/preview.jpg` |
 | `GET` | `/stream` | Flux MJPEG temps réel (`?fps=`, `?frames=`, `?max_seconds=`) |
 | `GET` | `/config` | Configuration effective |
 | `GET`/`POST` | `/calibration/start` | Lance la calibration automatique |
@@ -605,6 +616,8 @@ curl -X POST http://192.168.1.50:5000/fleet/report -H 'Content-Type: application
 | Fluidité sur LattePanda | `camera.width/height` = 1280×720, `detection.draw` = false |
 | Marge de la ROI | `table.roi_margin_px` |
 | Annotation de l'aperçu | `detection.draw` |
+| Purge d'images à la lecture | `camera.drain_frames` (0 par défaut, à laisser à 0 avec `buffer_size: 1`) |
+| Taille de l'aperçu JPEG | `preview_max_width` (1280 px par défaut, `0` = pleine résolution) |
 
 ### Zone analysée (`table.roi_mode`)
 
@@ -638,6 +651,44 @@ La Logitech 4K Stream Edition permet `camera.width: 3840`, `camera.height: 2160`
 `fourcc: MJPG`. Si le CPU de la LattePanda Delta sature, réduisez d'abord
 `detection.draw` puis la résolution — ou ne détectez les tags de coin qu'en
 basse résolution et les objets en pleine résolution.
+
+### Coût d'une image
+
+Le traitement d'une image (hors capture) se décompose ainsi, mesuré sur une scène
+synthétique 1920×1080 (9 tags) :
+
+| Étape | Coût | Remarque |
+|---|---|---|
+| `cvtColor` BGR→gris | ~1 ms | tampon réutilisé d'une image à l'autre |
+| **détection ArUco** | **~85 %** | une seule passe sur l'image grise |
+| pose caméra (`solvePnP`) | ~0,4 ms | 4 tags de coin |
+| filtre ROI + pose des tags | ~0,4 ms | appartenance à un polygone (`pointPolygonTest`) |
+| annotation (`detection.draw`) | ~2,7 ms | tracés groupés en un appel par couleur |
+
+Points importants :
+
+* **une seule passe ArUco** : les détections hors de la zone analysée (§ ci-dessus)
+  sont écartées *après* coup par un test d'appartenance au polygone, au lieu de
+  relancer tout le détecteur sur une image masquée ;
+* **pas de copie d'image** : l'annotation est faite en place dans le tampon privé
+  de la caméra ;
+* la pose d'un tag est obtenue directement par `SOLVEPNP_IPPE_SQUARE` (solution
+  analytique pour un carré plan), sans affinage itératif ;
+* `camera.drain_frames` vaut `0` : avec `camera.buffer_size: 1`, la trame lue est
+  déjà la plus récente, et purger des images coûterait une période de capture
+  par image jetée ;
+* l'aperçu JPEG est réduit à `preview_max_width` avant encodage : c'est l'encodage
+  JPEG qui domine le coût d'un `/preview` ou d'un `/stream`, et il est inutile de
+  l'envoyer en pleine résolution à un panneau d'affichage plus petit.
+
+Les leviers restants, par ordre d'efficacité, sont donc la **résolution**
+capturée, `detection.draw`, puis les paramètres ArUco (`adaptiveThreshWinSizeStep`,
+`cornerRefinementMethod`) — au prix de la robustesse de détection.
+
+Sur le robot, le coût réel se lit dans `GET /status` : `stats.proc_ms` (moyenne
+par image sur la dernière seconde), `stats.last_proc_ms`, `stats.proc_ms_max` et
+`stats.aruco_ms` (part du détecteur ArUco) ; le journal console en donne un bilan
+toutes les 5 s (`perf: … fps | traitement … ms/image`).
 
 ### Robots (flotte)
 
@@ -740,7 +791,8 @@ cmake --build build -j          # construit aussi matvision-tests
 
 Couverture : géométrie et conventions d'angle, détection ArUco, **pose caméra par
 `solvePnP`** (sans homographie) et changement de base, positions des objets en
-mm/deg, ROI, sérialisation de la calibration, calibration automatique sur damier
+mm/deg, filtrage par zone analysée (`table` / `markers`), réduction de l'aperçu,
+sérialisation de la calibration, calibration automatique sur damier
 synthétique, avertissement de résolution, toutes les routes de l'API, l'interface
 web (page HTML, ressources statiques, négociation de contenu, flux MJPEG borné)
 et la flotte de robots (état, stratégies, pilotage d'un robot simulé par un petit

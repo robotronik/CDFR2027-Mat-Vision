@@ -46,6 +46,7 @@ struct FrameStats {
   double proc_ms = 0.0;
   double proc_ms_max = 0.0;
   double last_proc_ms = 0.0;
+  double aruco_ms = 0.0;  ///< part de `proc_ms` passée dans le détecteur ArUco
 
   nlohmann::json to_json() const;
 };
@@ -91,8 +92,8 @@ class VisionEngine {
 
  private:
   void run();
-  cv::Mat handle_frame(const cv::Mat& frame);
-  cv::Mat detect(const cv::Mat& frame);
+  cv::Mat handle_frame(cv::Mat frame);
+  cv::Mat detect(cv::Mat frame);
   nlohmann::json locate_object(const ObjectConfig& object, const Marker& corners,
                                const TableLocalization& localization,
                                const Intrinsics* intrinsics);
@@ -106,6 +107,7 @@ class VisionEngine {
 
   std::unique_ptr<ArucoDetector> detector_;
   std::map<int, ObjectConfig> objects_config_;
+  std::vector<int> corner_ids_;
   std::unique_ptr<IFrameSource> camera_;
 
   std::optional<Intrinsics> intrinsics_;
@@ -126,6 +128,12 @@ class VisionEngine {
   bool last_table_ok_ = false;
   double last_table_fail_log_s_ = 0.0;
   bool shut_down_ = false;
+
+  // Tampons réutilisés à chaque image (boucle de capture uniquement).
+  cv::Mat gray_;
+  std::vector<int> detected_ids_;
+  std::vector<Marker> detected_corners_;
+  double last_aruco_ms_ = 0.0;
 
   FrameStats stats_;
 };

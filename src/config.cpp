@@ -86,6 +86,7 @@ void from_json(const nlohmann::json& data, CameraConfig& camera) {
   camera.fps = data.value("fps", camera.fps);
   camera.fourcc = data.value("fourcc", camera.fourcc);
   camera.buffer_size = data.value("buffer_size", camera.buffer_size);
+  camera.drain_frames = data.value("drain_frames", camera.drain_frames);
   camera.warmup_frames = data.value("warmup_frames", camera.warmup_frames);
   camera.auto_exposure = data.value("auto_exposure", camera.auto_exposure);
   camera.auto_white_balance = data.value("auto_white_balance", camera.auto_white_balance);
@@ -423,6 +424,7 @@ nlohmann::json Config::to_json() const {
   data["api_host"] = api_host;
   data["api_port"] = api_port;
   data["preview_quality"] = preview_quality;
+  data["preview_max_width"] = preview_max_width;
   return data;
 }
 
@@ -464,6 +466,7 @@ Config load_config(const std::string& path) {
   config.api_host = value_or(data, "api_host", config.api_host);
   config.api_port = value_or(data, "api_port", config.api_port);
   config.preview_quality = value_or(data, "preview_quality", config.preview_quality);
+  config.preview_max_width = value_or(data, "preview_max_width", config.preview_max_width);
 
   MV_LOGD("configuration effective : " << config.objects.size() << " objets, "
                                        << config.table.markers.size() << " tags de coin, roi="

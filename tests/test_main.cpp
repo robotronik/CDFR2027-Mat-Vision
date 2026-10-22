@@ -25,6 +25,7 @@
 
 #include <httplib.h>
 #include <opencv2/calib3d.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/objdetect/aruco_dictionary.hpp>
 
@@ -261,6 +262,18 @@ void test_geometry() {
   const auto rotated = matvision::marker_corners_table(0.0, 0.0, 90.0, 100.0);
   CHECK_NEAR(rotated[0].x, -50.0, 1e-6);
   CHECK_NEAR(rotated[0].y, -50.0, 1e-6);
+
+  // ROI : enveloppe convexe des zones et test d'appartenance avec marge.
+  const std::vector<std::vector<cv::Point2f>> groups = {
+      {{0.0f, 0.0f}, {10.0f, 0.0f}, {10.0f, 10.0f}, {0.0f, 10.0f}}};
+  const std::vector<cv::Point2f> roi = matvision::build_roi_polygon(groups);
+  CHECK(roi.size() == 4);
+  CHECK(matvision::point_in_roi(roi, cv::Point2f(5.0f, 5.0f), 0));
+  CHECK(!matvision::point_in_roi(roi, cv::Point2f(25.0f, 5.0f), 0));
+  CHECK(matvision::point_in_roi(roi, cv::Point2f(15.0f, 5.0f), 6));
+  CHECK(matvision::build_roi_polygon({{{0.0f, 0.0f}, {1.0f, 1.0f}}}).empty());
+  // Sans polygone exploitable, aucune détection n'est écartée.
+  CHECK(matvision::point_in_roi({}, cv::Point2f(1000.0f, 1000.0f), 0));
 }
 
 void test_table_pose(const matvision::Config& config, const cv::Mat& scene) {
@@ -366,6 +379,84 @@ void test_engine_duplicate_ids(matvision::Config config, const cv::Mat& scene) {
   engine->shutdown();
 }
 
+void test_roi_modes(matvision::Config config, const cv::Mat& scene) {
+  // `table` : tout le tapis est analysé, y compris hors du quadrilatère des tags.
+  {
+    config.table.roi_mode = "table";
+    auto engine = make_engine(config, scene);
+    engine->start();
+    engine->start_detection();
+    CHECK(wait_for_objects(*engine, 3, 5.0));
+    const nlohmann::json payload = engine->objects();
+    bool outside_quad = false;
+    for (const auto& item : payload["objects"]) {
+      if (item.value("id", -1) == 13) {
+        outside_quad = true;
+      }
+    }
+    CHECK(outside_quad);
+    engine->shutdown();
+  }
+
+  // `markers` : seuls les objets dans le quadrilatère des tags sont relevés.
+  {
+    config.table.roi_mode = "markers";
+    auto engine = make_engine(config, scene);
+    engine->start();
+    engine->start_detection();
+    CHECK(wait_for_objects(*engine, 2, 5.0));
+    const nlohmann::json payload = engine->objects();
+    int count = 0;
+    bool outside_quad = false;
+    for (const auto& item : payload["objects"]) {
+      ++count;
+      if (item.value("id", -1) == 13) {
+        outside_quad = true;
+      }
+    }
+    CHECK(count == 2);
+    CHECK(!outside_quad);
+    engine->shutdown();
+  }
+}
+
+void test_preview_scaling(matvision::Config config, const cv::Mat& scene) {
+  // Aperçu réduit : la largeur est plafonnée, la hauteur garde les proportions.
+  {
+    config.preview_max_width = 640;
+    auto engine = make_engine(config, scene);
+    engine->start();
+    engine->start_detection();
+    CHECK(wait_for_objects(*engine, 1, 5.0));
+    const auto data = engine->preview_jpeg();
+    CHECK(data.has_value());
+    if (data) {
+      const cv::Mat decoded = cv::imdecode(*data, cv::IMREAD_COLOR);
+      CHECK(!decoded.empty());
+      CHECK(decoded.cols == 640);
+      CHECK(decoded.rows == 360);
+    }
+    engine->shutdown();
+  }
+
+  // 0 = pleine résolution.
+  {
+    config.preview_max_width = 0;
+    auto engine = make_engine(config, scene);
+    engine->start();
+    engine->start_detection();
+    CHECK(wait_for_objects(*engine, 1, 5.0));
+    const auto data = engine->preview_jpeg();
+    CHECK(data.has_value());
+    if (data) {
+      const cv::Mat decoded = cv::imdecode(*data, cv::IMREAD_COLOR);
+      CHECK(!decoded.empty());
+      CHECK(decoded.cols == kWidth);
+    }
+    engine->shutdown();
+  }
+}
+
 void test_intrinsics_roundtrip(const std::string& dir) {
   matvision::Intrinsics intrinsics;
   intrinsics.camera_matrix = camera_matrix();
@@ -390,10 +481,11 @@ void test_intrinsics_roundtrip(const std::string& dir) {
 void test_config_roundtrip(const std::string& dir) {
   const std::string path = dir + "/config_roundtrip.json";
   const nlohmann::json source = {
-      {"camera", {{"device", 2}, {"width", 640}}},
+      {"camera", {{"device", 2}, {"width", 640}, {"drain_frames", 2}}},
       {"table", {{"markers", {{{"id", 1}, {"x", 10.0}}}}}},
       {"objects", {{{"id", 13}, {"label", "element"}}}},
       {"robots", {{"main", {{"host", "1.2.3.4"}}}}},
+      {"preview_max_width", 640},
   };
   {
     std::ofstream output(path);
@@ -402,12 +494,16 @@ void test_config_roundtrip(const std::string& dir) {
   const matvision::Config config = matvision::load_config(path);
   CHECK(config.camera.device == "2");
   CHECK(config.camera.width == 640);
+  CHECK(config.camera.drain_frames == 2);
+  CHECK(config.preview_max_width == 640);
   CHECK(config.table.markers.size() == 1);
   CHECK(config.objects.size() == 1);
   CHECK(!config.objects[0].box.has_value());
 
   const nlohmann::json roundtrip = config.to_json();
   CHECK(roundtrip["camera"]["device"] == "2");
+  CHECK(roundtrip["camera"]["drain_frames"] == 2);
+  CHECK(roundtrip["preview_max_width"] == 640);
   CHECK(!roundtrip["objects"][0].contains("box"));
   CHECK(roundtrip["robots"]["main"]["host"] == "1.2.3.4");
 
@@ -802,6 +898,10 @@ int main() {
   test_engine_positions(config, scene);
   std::cout << "== moteur & doublons d'identifiant ==\n";
   test_engine_duplicate_ids(config, build_scene(config, kDuplicateSceneObjects));
+  std::cout << "== zone analysée (ROI) ==\n";
+  test_roi_modes(config, scene);
+  std::cout << "== aperçu (réduction) ==\n";
+  test_preview_scaling(config, scene);
   std::cout << "== intrinsèques (sérialisation) ==\n";
   test_intrinsics_roundtrip(dir);
   std::cout << "== configuration (aller-retour) ==\n";
