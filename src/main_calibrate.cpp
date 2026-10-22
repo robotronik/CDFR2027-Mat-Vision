@@ -28,7 +28,7 @@
 namespace {
 
 struct Args {
-  std::string config = "config/default.json";
+  std::string config = matvision::default_config_path();
   std::string device;
   int width = 0;
   int height = 0;
@@ -47,7 +47,7 @@ struct Args {
 
 void print_usage() {
   std::cout << "Usage : matvision-calibrate [options]\n"
-               "  --config FILE       fichier de configuration JSON\n"
+               "  --config FILE       fichier JSON (défaut : config/default.json du projet)\n"
                "  --device D          index ou chemin du périphérique vidéo\n"
                "  --width N / --height N  résolution demandée\n"
                "  --frames N          nombre de vues à capturer\n"

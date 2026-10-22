@@ -48,7 +48,7 @@
     "auto_white_balance": true,
     "backend": "v4l2",
     "buffer_size": 1,
-    "device": 2,
+    "device": 0,
     "fourcc": "MJPG",
     "fps": 30,
     "height": 1080,

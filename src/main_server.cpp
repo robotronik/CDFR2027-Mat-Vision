@@ -30,7 +30,7 @@
 namespace {
 
 struct Args {
-  std::string config = "config/default.json";
+  std::string config = matvision::default_config_path();
   std::string host;
   int port = 0;
   std::string device;
@@ -45,7 +45,7 @@ struct Args {
 
 void print_usage() {
   std::cout << "Usage : matvision-server [options]\n"
-               "  --config FILE      fichier de configuration JSON (défaut config/default.json)\n"
+               "  --config FILE      fichier JSON (défaut : config/default.json du projet)\n"
                "  --host ADDR        adresse d'écoute de l'API\n"
                "  --port N           port de l'API\n"
                "  --device D         index ou chemin de la caméra\n"
