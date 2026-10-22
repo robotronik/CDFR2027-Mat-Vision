@@ -9,7 +9,6 @@ enum class LogLevel { Debug = 0, Info, Warning, Error };
 
 /// Niveau minimal des messages écrits sur la console (stderr).
 void set_log_level(LogLevel level);
-LogLevel log_level();
 bool log_enabled(LogLevel level);
 void log_write(LogLevel level, const std::string& message);
 

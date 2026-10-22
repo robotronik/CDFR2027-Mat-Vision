@@ -21,6 +21,7 @@
 #include "matvision/aruco.hpp"
 #include "matvision/calibration.hpp"
 #include "matvision/camera.hpp"
+#include "matvision/cli.hpp"
 #include "matvision/config.hpp"
 #include "matvision/logger.hpp"
 #include "matvision/table.hpp"
@@ -64,36 +65,29 @@ void print_usage() {
 
 Args parse_args(int argc, char** argv) {
   Args args;
-  auto require_value = [&](int& index) -> std::string {
-    if (index + 1 >= argc) {
-      std::cerr << "option " << argv[index] << " : valeur manquante\n";
-      std::exit(2);
-    }
-    return argv[++index];
-  };
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--config") {
-      args.config = require_value(i);
+      args.config = matvision::cli::require_value(argc, argv, i);
     } else if (arg == "--device") {
-      args.device = require_value(i);
+      args.device = matvision::cli::require_value(argc, argv, i);
     } else if (arg == "--width") {
-      args.width = std::stoi(require_value(i));
+      args.width = matvision::cli::to_int(arg, matvision::cli::require_value(argc, argv, i));
     } else if (arg == "--height") {
-      args.height = std::stoi(require_value(i));
+      args.height = matvision::cli::to_int(arg, matvision::cli::require_value(argc, argv, i));
     } else if (arg == "--frames") {
-      args.frames = std::stoi(require_value(i));
+      args.frames = matvision::cli::to_int(arg, matvision::cli::require_value(argc, argv, i));
     } else if (arg == "--grid") {
-      args.grid_cols = std::stoi(require_value(i));
-      args.grid_rows = std::stoi(require_value(i));
+      args.grid_cols = matvision::cli::to_int(arg, matvision::cli::require_value(argc, argv, i));
+      args.grid_rows = matvision::cli::to_int(arg, matvision::cli::require_value(argc, argv, i));
     } else if (arg == "--square-size") {
-      args.square_size = std::stod(require_value(i));
+      args.square_size = matvision::cli::to_double(arg, matvision::cli::require_value(argc, argv, i));
     } else if (arg == "--output") {
-      args.output = require_value(i);
+      args.output = matvision::cli::require_value(argc, argv, i);
     } else if (arg == "--timeout") {
-      args.timeout = std::stod(require_value(i));
+      args.timeout = matvision::cli::to_double(arg, matvision::cli::require_value(argc, argv, i));
     } else if (arg == "--seconds") {
-      args.seconds = std::stod(require_value(i));
+      args.seconds = matvision::cli::to_double(arg, matvision::cli::require_value(argc, argv, i));
     } else if (arg == "--no-display") {
       args.no_display = true;
     } else if (arg == "--check-table") {

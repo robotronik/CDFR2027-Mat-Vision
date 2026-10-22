@@ -15,7 +15,7 @@
 
 #include <opencv2/core.hpp>
 
-#include "matvision/json.hpp"
+#include <nlohmann/json.hpp>
 
 namespace matvision {
 

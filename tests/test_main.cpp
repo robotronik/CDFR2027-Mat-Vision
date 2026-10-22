@@ -14,6 +14,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -35,6 +37,8 @@
 #include "matvision/vision.hpp"
 
 namespace {
+
+namespace fs = std::filesystem;
 
 int g_checks = 0;
 int g_failures = 0;
@@ -188,7 +192,6 @@ class FakeFrameSource : public matvision::IFrameSource {
   bool read_latest(cv::Mat& frame, int /*drain*/) override { return read(frame); }
   void close() override { open_ = false; }
   bool is_open() const override { return open_; }
-  cv::Size size() const override { return frame_.size(); }
   nlohmann::json info() const override {
     return {{"device", "fake"},     {"opened", open_},    {"width", frame_.cols},
             {"height", frame_.rows}, {"fourcc", "FAKE"},   {"fps", 30.0}};
@@ -198,6 +201,12 @@ class FakeFrameSource : public matvision::IFrameSource {
   cv::Mat frame_;
   bool open_ = false;
 };
+
+std::unique_ptr<matvision::VisionEngine> make_engine(const matvision::Config& config,
+                                                    const cv::Mat& scene) {
+  return std::make_unique<matvision::VisionEngine>(
+      config, false, std::make_unique<FakeFrameSource>(scene));
+}
 
 std::string temp_dir() {
   const char* buffer = std::getenv("TMPDIR");
@@ -218,6 +227,14 @@ matvision::Config make_config(const std::string& dir) {
   intrinsics.frames = 20;
   save_intrinsics(config.intrinsics_path(), intrinsics);
   return config;
+}
+
+matvision::RobotConfig robot_config(std::string name, std::string host, int port) {
+  matvision::RobotConfig robot;
+  robot.name = std::move(name);
+  robot.host = std::move(host);
+  robot.port = port;
+  return robot;
 }
 
 bool wait_for_objects(matvision::VisionEngine& engine, int expected, double timeout_s) {
@@ -279,8 +296,7 @@ void test_table_pose(const matvision::Config& config, const cv::Mat& scene) {
 }
 
 void test_engine_positions(matvision::Config config, const cv::Mat& scene) {
-  auto engine = std::make_unique<matvision::VisionEngine>(
-      config, false, std::make_unique<FakeFrameSource>(scene));
+  auto engine = make_engine(config, scene);
   engine->start();
   engine->start_detection();
   CHECK(wait_for_objects(*engine, 3, 5.0));
@@ -323,8 +339,7 @@ void test_engine_positions(matvision::Config config, const cv::Mat& scene) {
 }
 
 void test_engine_duplicate_ids(matvision::Config config, const cv::Mat& scene) {
-  auto engine = std::make_unique<matvision::VisionEngine>(
-      config, false, std::make_unique<FakeFrameSource>(scene));
+  auto engine = make_engine(config, scene);
   engine->start();
   engine->start_detection();
   CHECK(wait_for_objects(*engine, 2, 5.0));
@@ -372,6 +387,45 @@ void test_intrinsics_roundtrip(const std::string& dir) {
   }
 }
 
+void test_config_roundtrip(const std::string& dir) {
+  const std::string path = dir + "/config_roundtrip.json";
+  const nlohmann::json source = {
+      {"camera", {{"device", 2}, {"width", 640}}},
+      {"table", {{"markers", {{{"id", 1}, {"x", 10.0}}}}}},
+      {"objects", {{{"id", 13}, {"label", "element"}}}},
+      {"robots", {{"main", {{"host", "1.2.3.4"}}}}},
+  };
+  {
+    std::ofstream output(path);
+    output << source.dump(2);
+  }
+  const matvision::Config config = matvision::load_config(path);
+  CHECK(config.camera.device == "2");
+  CHECK(config.camera.width == 640);
+  CHECK(config.table.markers.size() == 1);
+  CHECK(config.objects.size() == 1);
+  CHECK(!config.objects[0].box.has_value());
+
+  const nlohmann::json roundtrip = config.to_json();
+  CHECK(roundtrip["camera"]["device"] == "2");
+  CHECK(!roundtrip["objects"][0].contains("box"));
+  CHECK(roundtrip["robots"]["main"]["host"] == "1.2.3.4");
+
+  // Une valeur mal typée ne doit pas faire échouer le chargement.
+  {
+    std::ofstream output(path);
+    output << R"({"camera":{"width":"invalide"}})";
+  }
+  bool threw = false;
+  try {
+    matvision::load_config(path);
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  CHECK(!threw);
+  fs::remove(path);
+}
+
 void test_intrinsics_resolution_warning(matvision::Config config, const cv::Mat& scene) {
   matvision::Intrinsics intrinsics;
   intrinsics.camera_matrix = camera_matrix();
@@ -379,8 +433,7 @@ void test_intrinsics_resolution_warning(matvision::Config config, const cv::Mat&
   intrinsics.image_size = cv::Size(1920, 1080);  // volontairement différent du flux
   save_intrinsics(config.intrinsics_path(), intrinsics);
 
-  auto engine = std::make_unique<matvision::VisionEngine>(
-      config, false, std::make_unique<FakeFrameSource>(scene));
+  auto engine = make_engine(config, scene);
   engine->start();
   engine->start_detection();
 
@@ -528,7 +581,7 @@ class FakeRobot {
 
 void test_robot_host_config(const std::string& dir) {
   const std::string path = dir + "/robot_host.json";
-  std::system(("rm -f " + path).c_str());
+  fs::remove(path);
 
   // Le fichier est créé s'il n'existe pas et les autres valeurs par défaut.
   CHECK(matvision::set_robot_host_in_config(path, "main", "10.0.0.1", 8080));
@@ -547,15 +600,14 @@ void test_robot_host_config(const std::string& dir) {
   CHECK(matvision::apply_robot_host(robots, "main", "192.168.0.9", 90));
   CHECK(robots.main->host == "192.168.0.9");
   CHECK(!matvision::apply_robot_host(robots, "swarm/9", "x", 1));
-  std::system(("rm -f " + path).c_str());
+  fs::remove(path);
 }
 
 void test_api(matvision::Config config, const cv::Mat& scene, int robot_port) {
-  config.robots.main = matvision::RobotConfig{"Principal", "127.0.0.1", robot_port};
-  config.robots.hunter = matvision::RobotConfig{"Chasseur", "127.0.0.1", robot_port};
+  config.robots.main = robot_config("Principal", "127.0.0.1", robot_port);
+  config.robots.hunter = robot_config("Chasseur", "127.0.0.1", robot_port);
 
-  auto engine = std::make_unique<matvision::VisionEngine>(
-      config, false, std::make_unique<FakeFrameSource>(scene));
+  auto engine = make_engine(config, scene);
   engine->start();
   engine->start_detection();
   CHECK(wait_for_objects(*engine, 3, 5.0));
@@ -711,8 +763,7 @@ void test_api(matvision::Config config, const cv::Mat& scene, int robot_port) {
 }
 
 void test_shutdown_route(matvision::Config config, const cv::Mat& scene) {
-  auto engine = std::make_unique<matvision::VisionEngine>(
-      config, false, std::make_unique<FakeFrameSource>(scene));
+  auto engine = make_engine(config, scene);
   engine->start();
 
   auto stopping = std::make_shared<std::atomic<bool>>(false);
@@ -738,7 +789,7 @@ void test_shutdown_route(matvision::Config config, const cv::Mat& scene) {
 int main() {
   cv::setNumThreads(1);
   const std::string dir = temp_dir();
-  std::system(("mkdir -p " + dir).c_str());
+  fs::create_directories(dir);
 
   matvision::Config config = make_config(dir);
   const cv::Mat scene = build_scene(config);
@@ -753,6 +804,8 @@ int main() {
   test_engine_duplicate_ids(config, build_scene(config, kDuplicateSceneObjects));
   std::cout << "== intrinsèques (sérialisation) ==\n";
   test_intrinsics_roundtrip(dir);
+  std::cout << "== configuration (aller-retour) ==\n";
+  test_config_roundtrip(dir);
   std::cout << "== adresses des robots ==\n";
   test_robot_host_config(dir);
   std::cout << "== avertissement de résolution ==\n";
@@ -770,10 +823,10 @@ int main() {
   std::cout << "\n" << (g_checks - g_failures) << '/' << g_checks << " vérifications réussies\n";
   if (g_failures > 0) {
     std::cerr << g_failures << " échec(s)\n";
-    std::system(("rm -rf " + dir).c_str());
+    fs::remove_all(dir);
     return 1;
   }
-  std::system(("rm -rf " + dir).c_str());
+  fs::remove_all(dir);
   std::cout << "OK\n";
   return 0;
 }

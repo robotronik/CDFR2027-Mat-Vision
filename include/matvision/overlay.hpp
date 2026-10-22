@@ -10,7 +10,7 @@
 #include "matvision/calibration.hpp"
 #include "matvision/config.hpp"
 #include "matvision/geometry.hpp"
-#include "matvision/json.hpp"
+#include <nlohmann/json.hpp>
 #include "matvision/table.hpp"
 
 namespace matvision {

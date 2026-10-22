@@ -6,16 +6,15 @@
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include "matvision/util.hpp"
+
 namespace matvision {
 
 nlohmann::json Position::to_json(int digits) const {
-  nlohmann::json data;
-  data["x"] = std::round(x * std::pow(10.0, digits)) / std::pow(10.0, digits);
-  data["y"] = std::round(y * std::pow(10.0, digits)) / std::pow(10.0, digits);
-  data["z"] = std::round(z * std::pow(10.0, digits)) / std::pow(10.0, digits);
-  data["a"] = std::round(normalize_angle_deg(a) * std::pow(10.0, digits)) /
-              std::pow(10.0, digits);
-  return data;
+  return {{"x", round_to(x, digits)},
+          {"y", round_to(y, digits)},
+          {"z", round_to(z, digits)},
+          {"a", round_to(normalize_angle_deg(a), digits)}};
 }
 
 double normalize_angle_deg(double angle) {

@@ -10,12 +10,9 @@
 #include <opencv2/objdetect/aruco_dictionary.hpp>
 
 #include "matvision/geometry.hpp"
-#include "matvision/json.hpp"
+#include <nlohmann/json.hpp>
 
 namespace matvision {
-
-/// Paramètres par défaut du détecteur ArUco.
-cv::aruco::DetectorParameters default_detector_parameters();
 
 /// Encapsule dictionnaire + paramètres + appel `detectMarkers`.
 class ArucoDetector {
@@ -26,20 +23,14 @@ class ArucoDetector {
                          const nlohmann::json& params = nlohmann::json());
 
   /// Détecte les marqueurs. `mask` (optionnel) restreint la recherche à la ROI.
+  /// Une image couleur est convertie en niveaux de gris automatiquement.
   void detect(const cv::Mat& image, std::vector<int>& ids, std::vector<Marker>& corners,
-              std::vector<Marker>* rejected = nullptr, const cv::Mat& mask = cv::Mat(),
-              bool gray = false) const;
+              const cv::Mat& mask = cv::Mat()) const;
 
   /// Comme `detect` mais renvoie une table `id -> coins`.
-  MarkerMap detect_by_id(const cv::Mat& image, const cv::Mat& mask = cv::Mat(),
-                         bool gray = false) const;
-
-  const std::string& dictionary_name() const { return dictionary_name_; }
+  MarkerMap detect_by_id(const cv::Mat& image, const cv::Mat& mask = cv::Mat()) const;
 
  private:
-  std::string dictionary_name_;
-  cv::aruco::Dictionary dictionary_;
-  cv::aruco::DetectorParameters parameters_;
   cv::aruco::ArucoDetector detector_;
 };
 

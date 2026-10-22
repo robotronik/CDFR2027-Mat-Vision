@@ -16,41 +16,7 @@ let lastObjects = [];
 
 /* ------------------------------------------------------------------ utils */
 
-async function api(path, options = {}) {
-  const response = await fetch(path, { cache: 'no-store', ...options });
-  if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      detail = (await response.json()).message || detail;
-    } catch (_) { /* réponse non JSON */ }
-    throw new Error(`${response.status} ${detail}`);
-  }
-  return response.json();
-}
-
-function num(value, digits = 1) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return '—';
-  return Number(value).toFixed(digits);
-}
-
-function toast(message, isError = false) {
-  const element = $('toast');
-  element.textContent = message;
-  element.style.color = isError ? 'var(--danger)' : 'var(--accent)';
-  element.hidden = false;
-  clearTimeout(element._timer);
-  element._timer = setTimeout(() => { element.hidden = true; }, 3000);
-}
-
-function setConnected(online, detail = '') {
-  $('conn-dot').className = 'dot ' + (online ? 'online' : 'offline');
-  $('conn-label').textContent = online ? 'API connectée' : 'API injoignable';
-  if (!online && detail) $('conn-label').textContent += ` (${detail})`;
-}
-
-function className(isOk) {
-  return isOk ? 'ok' : 'ko';
-}
+const { api, num, toast, escapeHtml, drawArrow } = window.matvision;
 
 /* ----------------------------------------------------------------- render */
 
@@ -133,12 +99,6 @@ function renderObjects(list) {
       <td>${num(item.y)}</td>
       <td>${num(item.a)}°</td>
     </tr>`).join('');
-}
-
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>"']/g, (char) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  })[char]);
 }
 
 /* -------------------------------------------------------------- plan table */
@@ -227,24 +187,6 @@ function drawMap(objects, status) {
   $('map-scale').textContent = locked
     ? `échelle ${(scale * 100).toFixed(2)} px / 100 mm`
     : 'repère non verrouillé';
-}
-
-function drawArrow(ctx, fromX, fromY, toX, toY, color) {
-  const angle = Math.atan2(toY - fromY, toX - fromX);
-  const head = 7;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1.8;
-  ctx.beginPath();
-  ctx.moveTo(fromX, fromY);
-  ctx.lineTo(toX, toY);
-  ctx.stroke();
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(toX, toY);
-  ctx.lineTo(toX - head * Math.cos(angle - 0.4), toY - head * Math.sin(angle - 0.4));
-  ctx.lineTo(toX - head * Math.cos(angle + 0.4), toY - head * Math.sin(angle + 0.4));
-  ctx.closePath();
-  ctx.fill();
 }
 
 /* ------------------------------------------------------------- calibration */
@@ -408,7 +350,7 @@ function wireUp() {
     setStream(false); // ne plus solliciter un serveur qui s'arrête
     try {
       await api('/shutdown', { method: 'POST' });
-      toast('Serveur arrêté — relancez « python server.py »');
+      toast('Serveur arrêté — relancez « ./build/matvision-server »');
     } catch (error) {
       toast(error.message, true);
     }
@@ -456,8 +398,8 @@ async function init() {
     tableInfo = { width_mm: 2000, height_mm: 3000, markers: [] };
   }
   try {
-    renderCalibration(await api('/calibration/status'));
     const status = await api('/calibration/status');
+    renderCalibration(status);
     if (status.status === 'running') startCalibrationPolling();
     $('cal-config').textContent =
       `${status.config.cols}×${status.config.rows} coins · case ${status.config.square_size_mm} mm · ` +

@@ -9,6 +9,7 @@
 #include <opencv2/calib3d.hpp>
 
 #include "matvision/logger.hpp"
+#include "matvision/util.hpp"
 
 namespace matvision {
 
@@ -82,7 +83,7 @@ nlohmann::json TableLocalization::to_json() const {
                          {"used_ids", used_ids},
                          {"points", total_points},
                          {"inliers", static_cast<int>(used_ids.size()) * 4},
-                         {"residual_px", std::round(residual_px * 100.0) / 100.0},
+                         {"residual_px", round_to(residual_px, 2)},
                          {"reason", reason}};
   if (has_camera_position) {
     data["camera_position"] = camera_position.to_json();

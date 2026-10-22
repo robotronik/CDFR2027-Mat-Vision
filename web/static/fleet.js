@@ -32,32 +32,10 @@
 
   /* ----------------------------------------------------------------- utils */
 
-  async function api(path, options = {}) {
-    const response = await fetch(path, { cache: 'no-store', ...options });
-    if (!response.ok) {
-      let detail = response.statusText;
-      try { detail = (await response.json()).message || detail; } catch (_) { /* non JSON */ }
-      throw new Error(detail);
-    }
-    return response.json();
-  }
-
-  function post(path, payload) {
-    return api(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  }
+  const { api, post, num, escapeHtml, drawArrow, toast } = window.matvision;
 
   function fleetToast(message, isError = false) {
-    const element = $('fleet-toast');
-    if (!element) return;
-    element.textContent = message;
-    element.style.color = isError ? 'var(--danger)' : 'var(--accent)';
-    element.hidden = false;
-    clearTimeout(element._timer);
-    element._timer = setTimeout(() => { element.hidden = true; }, 3000);
+    toast(message, isError, 'fleet-toast');
   }
 
   function unique(values) {
@@ -315,8 +293,8 @@
     ctx.lineWidth = 1.5;
     ctx.strokeRect(left, top, tableWidth, tableHeight);
 
-    drawArrow(ctx, sx(0), sy(0), sx(500), sy(0), 'rgba(248,81,73,0.5)');
-    drawArrow(ctx, sx(0), sy(0), sx(0), sy(500), 'rgba(88,166,255,0.5)');
+    drawArrow(ctx, sx(0), sy(0), sx(500), sy(0), 'rgba(248,81,73,0.5)', 6, 1.6);
+    drawArrow(ctx, sx(0), sy(0), sx(0), sy(500), 'rgba(88,166,255,0.5)', 6, 1.6);
 
     (live.objects || []).forEach((object) => drawGameObject(ctx, object, sx, sy));
     (live.robots || []).forEach((robot) => drawPath(ctx, robot, sx, sy));
@@ -425,27 +403,9 @@
     ctx.restore();
   }
 
-  function drawArrow(ctx, fromX, fromY, toX, toY, color) {
-    const angle = Math.atan2(toY - fromY, toX - fromX);
-    const head = 6;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.6;
-    ctx.beginPath();
-    ctx.moveTo(fromX, fromY);
-    ctx.lineTo(toX, toY);
-    ctx.stroke();
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(toX, toY);
-    ctx.lineTo(toX - head * Math.cos(angle - 0.4), toY - head * Math.sin(angle - 0.4));
-    ctx.lineTo(toX - head * Math.cos(angle + 0.4), toY - head * Math.sin(angle + 0.4));
-    ctx.closePath();
-    ctx.fill();
-  }
-
   function positionText(robot) {
     if (robot.x === null || robot.x === undefined) return 'position inconnue';
-    return `x ${Number(robot.x).toFixed(0)} · y ${Number(robot.y).toFixed(0)} · a ${Number(robot.a || 0).toFixed(0)}°`;
+    return `x ${num(robot.x, 0)} · y ${num(robot.y, 0)} · a ${num(robot.a || 0, 0)}°`;
   }
 
   function renderLive(live) {

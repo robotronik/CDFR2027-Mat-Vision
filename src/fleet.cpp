@@ -2,11 +2,11 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 
 #include <httplib.h>
 
 #include "matvision/logger.hpp"
+#include "matvision/util.hpp"
 
 namespace matvision {
 
@@ -25,22 +25,6 @@ constexpr double kStatusCacheS = 1.0;
 /// Garde-fou sur le nombre de points conservés par trajectoire.
 constexpr std::size_t kMaxPathPoints = 600;
 
-double steady_seconds() {
-  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
-
-double wall_seconds() {
-  return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch())
-      .count();
-}
-
-std::string lowered(std::string text) {
-  std::transform(text.begin(), text.end(), text.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return text;
-}
-
 }  // namespace
 
 std::string RobotTarget::name() const {
@@ -51,13 +35,28 @@ bool RobotTarget::configured() const { return !config.host.empty() && config.ena
 
 std::string RobotTarget::base_url() const { return config.base_url(); }
 
-Fleet::Fleet(const RobotsConfig& config, VisionEngine& engine)
-    : config_(config), engine_(engine) {}
+nlohmann::json RobotTarget::to_json() const {
+  return {{"key", key},
+          {"name", name()},
+          {"role", role},
+          {"index", index.has_value() ? nlohmann::json(index.value())
+                                      : nlohmann::json(nullptr)},
+          {"host", config.host},
+          {"port", config.port},
+          {"configured", configured()}};
+}
+
+Fleet::Fleet(VisionEngine& engine) : engine_(engine) {
+  const RobotsConfig config = engine_.robots_config();
+  request_timeout_s_ = config.request_timeout_s;
+  path_window_s_ = config.path_window_s;
+}
 
 std::vector<RobotTarget> Fleet::targets() const {
+  // Conserver la copie : `targets()` renvoie des pointeurs vers cette instance.
+  const RobotsConfig config = engine_.robots_config();
   std::vector<RobotTarget> result;
-  std::lock_guard<std::mutex> lock(config_mutex_);
-  for (const auto& [key, robot] : config_.targets()) {
+  for (const auto& [key, robot] : config.targets()) {
     RobotTarget target;
     target.key = key;
     const std::size_t slash = key.find('/');
@@ -106,7 +105,7 @@ nlohmann::json Fleet::request(const std::string& base_url, const std::string& pa
                               const std::string& method, const nlohmann::json& payload) {
   httplib::Client client(base_url);
   const auto timeout = std::chrono::milliseconds(
-      static_cast<long long>(std::max(0.05, config_.request_timeout_s) * 1000.0));
+      static_cast<long long>(std::max(0.05, request_timeout_s_) * 1000.0));
   client.set_connection_timeout(timeout);
   client.set_read_timeout(timeout);
   client.set_write_timeout(timeout);
@@ -149,17 +148,11 @@ nlohmann::json Fleet::request(const std::string& base_url, const std::string& pa
 }
 
 nlohmann::json Fleet::fetch_state(const RobotTarget& target) {
+  nlohmann::json state = target.to_json();
   if (!target.configured()) {
-    return {{"key", target.key},
-            {"name", target.name()},
-            {"role", target.role},
-            {"index", target.index.has_value() ? nlohmann::json(target.index.value())
-                                               : nlohmann::json(nullptr)},
-            {"host", target.config.host},
-            {"port", target.config.port},
-            {"configured", false},
-            {"online", false},
-            {"error", "adresse non renseignée"}};
+    state["online"] = false;
+    state["error"] = "adresse non renseignée";
+    return state;
   }
 
   const double now = steady_seconds();
@@ -171,15 +164,6 @@ nlohmann::json Fleet::fetch_state(const RobotTarget& target) {
     }
   }
 
-  nlohmann::json state = {{"key", target.key},
-                          {"name", target.name()},
-                          {"role", target.role},
-                          {"index", target.index.has_value()
-                                        ? nlohmann::json(target.index.value())
-                                        : nlohmann::json(nullptr)},
-                          {"host", target.config.host},
-                          {"port", target.config.port},
-                          {"configured", true}};
   try {
     const nlohmann::json robot = request(target.base_url(), "/get_robot");
     const int color_id = robot.value("team", 0);
@@ -254,7 +238,7 @@ std::string Fleet::our_color(bool allow_fetch) {
       return color;
     }
   }
-  const std::string color = lowered(config_.our_color);
+  const std::string color = lowered(engine_.robots_config().our_color);
   return kColorIds.count(color) != 0 ? color : "";
 }
 
@@ -268,12 +252,13 @@ nlohmann::json Fleet::status() {
   for (const auto& target : targets()) {
     robots.push_back(fetch_state(target));
   }
+  const std::string map_image = engine_.robots_config().map_image;
   return {{"robots", robots},
           {"our_color", our_color()},
           {"opponent_color", opponent_color()},
           {"table", table_info()},
-          {"map_image", config_.map_image.empty() ? nlohmann::json(nullptr)
-                                                  : nlohmann::json(config_.map_image)}};
+          {"map_image", map_image.empty() ? nlohmann::json(nullptr)
+                                          : nlohmann::json(map_image)}};
 }
 
 nlohmann::json Fleet::strategies() {
@@ -319,11 +304,8 @@ nlohmann::json Fleet::set_host(const std::string& key, const std::string& host, 
   if (port <= 0) {
     port = targets_list.front().config.port;
   }
-  {
-    std::lock_guard<std::mutex> lock(config_mutex_);
-    if (!apply_robot_host(config_, resolved, host, port)) {
-      throw FleetError("robot inconnu : '" + key + "'", 404);
-    }
+  if (!engine_.update_robot_host(resolved, host, port)) {
+    throw FleetError("robot inconnu : '" + key + "'", 404);
   }
   invalidate(resolved);
   MV_LOGI("adresse de " << resolved << " mise à jour : " << host << ':' << port);
@@ -362,13 +344,10 @@ nlohmann::json Fleet::apply(const std::string& key, const std::string& path,
     }
   }
 
-  bool all_failed = !results.empty();
-  for (const auto& item : results) {
-    if (item.value("ok", false)) {
-      all_failed = false;
-      break;
-    }
-  }
+  const bool all_failed =
+      !results.empty() && std::none_of(results.begin(), results.end(), [](const auto& item) {
+        return item.value("ok", false);
+      });
   if (failed && all_failed) {
     const nlohmann::json& first = results[0];
     throw FleetError(first.value("message", std::string("échec")),
@@ -464,11 +443,12 @@ nlohmann::json Fleet::live() {
                     {"a", object.value("a", 0.0)}});
   }
 
+  const std::string map_image = engine_.robots_config().map_image;
   return {{"our_color", our},
           {"opponent_color", opponent},
           {"table", table_info()},
-          {"map_image", config_.map_image.empty() ? nlohmann::json(nullptr)
-                                                  : nlohmann::json(config_.map_image)},
+          {"map_image", map_image.empty() ? nlohmann::json(nullptr)
+                                          : nlohmann::json(map_image)},
           {"robots", robots},
           {"opponents", opponents_live},
           {"objects", game},
@@ -563,7 +543,7 @@ void Fleet::push_path(const std::string& key, double x, double y, double a, doub
   while (path_points.size() > kMaxPathPoints) {
     path_points.pop_front();
   }
-  const double window = std::max(1.0, config_.path_window_s);
+  const double window = std::max(1.0, path_window_s_);
   while (!path_points.empty() && now - path_points.front().t > window) {
     path_points.pop_front();
   }

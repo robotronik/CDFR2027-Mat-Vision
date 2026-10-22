@@ -71,11 +71,13 @@ Mat-CDFR2027/
 │   ├── aruco.hpp                 # détecteur ArUco + tracé
 │   ├── calibration.hpp           # Intrinsics, AutoCalibrator
 │   ├── camera.hpp                # source d'images (webcam USB, IFrameSource)
+│   ├── cli.hpp                   # analyse d'arguments des exécutables
 │   ├── config.hpp                # structures de configuration
 │   ├── fleet.hpp                 # flotte de robots
 │   ├── geometry.hpp              # Position, angles, coins de tags, ROI, projection
 │   ├── logger.hpp                # journalisation console
 │   ├── table.hpp                 # pose caméra (solvePnP) + changement de base
+│   ├── util.hpp                  # temps, minuscules, arrondis
 │   └── vision.hpp                # moteur (boucle, modes, relevé des objets)
 ├── src/
 │   ├── api.cpp                   # routes + interface web + MJPEG
@@ -93,6 +95,7 @@ Mat-CDFR2027/
 ├── web/
 │   ├── index.html                # page de l'interface web (4 onglets)
 │   └── static/
+│       ├── common.js             # utilitaires partagés (API, HTML, toast, canvas)
 │       ├── app.js                # onglet Vision (aperçu, plan, calibration)
 │       ├── tabs.js               # navigation entre les onglets
 │       ├── fleet.js              # onglets Stratégie et Live table
@@ -128,6 +131,10 @@ Deux binaires sont produits :
 
 * `build/matvision-server` — API REST + détection ;
 * `build/matvision-calibrate` — calibration intrinsèque et contrôle du repère.
+
+Les ressources (`config/`, `web/`, `data/`) sont cherchées depuis le répertoire
+courant (et ses parents, jusqu'à 5 niveaux). La variable d'environnement
+`MATVISION_ROOT` permet de forcer la racine si le binaire est déplacé.
 
 Vérification rapide de la caméra :
 
@@ -503,12 +510,12 @@ Repères utiles :
 | `GET` | `/objects/<clé>` | Objets d'un tag (`36`) ou d'un libellé (`bleu`) |
 | `GET` | `/position` | Pose de la caméra dans le repère table |
 | `GET` | `/table` | Géométrie de la table, tags de coin, objets |
-| `GET` | `/preview` | Dernière image annotée (JPEG, `?quality=`) |
+| `GET` | `/preview` | Dernière image annotée (JPEG, `?quality=`) ; alias `/preview.jpg` |
 | `GET` | `/stream` | Flux MJPEG temps réel (`?fps=`, `?frames=`, `?max_seconds=`) |
 | `GET` | `/config` | Configuration effective |
-| `POST` | `/calibration/start` | Lance la calibration automatique |
+| `GET`/`POST` | `/calibration/start` | Lance la calibration automatique |
 | `GET` | `/calibration/status` | Progression (vues capturées, message) |
-| `POST` | `/calibration/stop` | Annule la calibration |
+| `GET`/`POST` | `/calibration/stop` | Annule la calibration ; alias `/calibration/cancel` |
 | `GET` | `/calibration/result` | Intrinsèques courantes |
 | `POST` | `/snapshot` | Enregistre l'image courante (`?path=`) |
 | `POST` | `/shutdown` | Arrête le serveur **et le processus** (`501` si non câblé) |

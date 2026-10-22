@@ -23,6 +23,7 @@
 #include <pthread.h>
 
 #include "matvision/api.hpp"
+#include "matvision/cli.hpp"
 #include "matvision/config.hpp"
 #include "matvision/logger.hpp"
 #include "matvision/vision.hpp"
@@ -60,27 +61,20 @@ void print_usage() {
 
 Args parse_args(int argc, char** argv) {
   Args args;
-  auto require_value = [&](int& index) -> std::string {
-    if (index + 1 >= argc) {
-      std::cerr << "option " << argv[index] << " : valeur manquante\n";
-      std::exit(2);
-    }
-    return argv[++index];
-  };
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--config") {
-      args.config = require_value(i);
+      args.config = matvision::cli::require_value(argc, argv, i);
     } else if (arg == "--host") {
-      args.host = require_value(i);
+      args.host = matvision::cli::require_value(argc, argv, i);
     } else if (arg == "--port") {
-      args.port = std::stoi(require_value(i));
+      args.port = matvision::cli::to_int(arg, matvision::cli::require_value(argc, argv, i));
     } else if (arg == "--device") {
-      args.device = require_value(i);
+      args.device = matvision::cli::require_value(argc, argv, i);
     } else if (arg == "--width") {
-      args.width = std::stoi(require_value(i));
+      args.width = matvision::cli::to_int(arg, matvision::cli::require_value(argc, argv, i));
     } else if (arg == "--height") {
-      args.height = std::stoi(require_value(i));
+      args.height = matvision::cli::to_int(arg, matvision::cli::require_value(argc, argv, i));
     } else if (arg == "--autostart") {
       args.autostart = true;
     } else if (arg == "--display") {

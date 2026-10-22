@@ -18,7 +18,7 @@
 #include <vector>
 
 #include "matvision/config.hpp"
-#include "matvision/json.hpp"
+#include <nlohmann/json.hpp>
 #include "matvision/vision.hpp"
 
 namespace matvision {
@@ -45,12 +45,13 @@ struct RobotTarget {
   /// Un robot sans adresse n'est jamais contacté (aucun appel réseau).
   bool configured() const;
   std::string base_url() const;
+  nlohmann::json to_json() const;
 };
 
 /// Client REST de la flotte + suivi des trajectoires.
 class Fleet {
  public:
-  Fleet(const RobotsConfig& config, VisionEngine& engine);
+  explicit Fleet(VisionEngine& engine);
 
   std::vector<RobotTarget> targets() const;
   nlohmann::json status();
@@ -91,10 +92,10 @@ class Fleet {
   nlohmann::json live_robots(const std::string& our_color,
                              const nlohmann::json& main_position_value);
 
-  RobotsConfig config_;
   VisionEngine& engine_;
+  double request_timeout_s_ = 0.8;
+  double path_window_s_ = 30.0;
   mutable std::mutex mutex_;
-  mutable std::mutex config_mutex_;
   std::map<std::string, std::pair<double, nlohmann::json>> cache_;
   std::map<std::string, std::deque<PathPoint>> paths_;
   std::map<std::string, nlohmann::json> reports_;
