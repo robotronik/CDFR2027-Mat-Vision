@@ -455,6 +455,43 @@ nlohmann::json Fleet::live() {
           {"timestamp", wall_seconds()}};
 }
 
+nlohmann::json Fleet::live_objects() {
+  const nlohmann::json payload = engine_.objects();
+  std::vector<nlohmann::json> objects;
+  for (const auto& item : payload.value("objects", nlohmann::json::array())) {
+    if (!item.value("label", std::string()).empty()) {
+      objects.push_back(item);
+    }
+  }
+
+  const std::string our = our_color(true);
+  const std::string opponent = opponent_color(true);
+
+  nlohmann::json opponents = nlohmann::json::array();
+  nlohmann::json game_objects = nlohmann::json::array();
+  for (const auto& object : objects) {
+    const std::string label = object.value("label", std::string());
+    if (!opponent.empty() && label == opponent) {
+      opponents.push_back({{"id", object.value("id", -1)},
+                           {"label", label},
+                           {"x", object.value("x", 0.0)},
+                           {"y", object.value("y", 0.0)},
+                           {"a", object.value("a", 0.0)}});
+    } else if (kColorIds.count(label) == 0) {
+      game_objects.push_back({{"id", object.value("id", -1)},
+                              {"label", label},
+                              {"x", object.value("x", 0.0)},
+                              {"y", object.value("y", 0.0)},
+                              {"a", object.value("a", 0.0)}});
+    }
+  }
+
+  return {{"our_color", our},
+          {"opponent_color", opponent},
+          {"objects", game_objects},
+          {"opponents", opponents}};
+}
+
 nlohmann::json Fleet::live_robots(const std::string& our_color,
                                   const nlohmann::json& main_position_value) {
   nlohmann::json entries = nlohmann::json::array();

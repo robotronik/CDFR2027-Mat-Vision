@@ -200,10 +200,17 @@ std::unique_ptr<httplib::Server> create_api(VisionEngine& engine, const ApiOptio
   route("/reset", Methods::Both, "réinitialise le suivi", reset_handler);
   route("/reset_tracking", Methods::Both, "alias de /reset", reset_handler);
 
-  route("/objects", Methods::Get, "objets détectés (repère table, mm)",
-        [&engine, json_ok](const httplib::Request& req, httplib::Response& res) {
+  route("/objects", Methods::Get, "objets détectés + adversaire (repère table, mm)",
+        [&engine, fleet, json_ok](const httplib::Request& req, httplib::Response& res) {
           const std::string label = req.has_param("label") ? req.get_param_value("label") : "";
-          json_ok(res, engine.objects(label));
+          nlohmann::json payload = engine.objects(label);
+          if (label.empty()) {
+            const nlohmann::json view = fleet->live_objects();
+            payload["our_color"] = view["our_color"];
+            payload["opponent_color"] = view["opponent_color"];
+            payload["opponents"] = view["opponents"];
+          }
+          json_ok(res, payload);
         });
 
   route(R"(/objects/([^/]+))", Methods::Get, "objets d'un tag ou d'un libellé",

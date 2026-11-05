@@ -48,8 +48,8 @@
     "auto_white_balance": true,
     "backend": "v4l2",
     "buffer_size": 1,
-    "drain_frames": 0,
     "device": 2,
+    "drain_frames": 0,
     "fourcc": "MJPG",
     "fps": 30,
     "height": 1080,
@@ -176,8 +176,8 @@
       "size": 80.0
     }
   ],
-  "preview_quality": 75,
   "preview_max_width": 1280,
+  "preview_quality": 75,
   "robots": {
     "hunter": {
       "host": "",
@@ -185,7 +185,7 @@
       "port": 80
     },
     "main": {
-      "host": "192.168.8.108",
+      "host": "192.168.0.103",
       "name": "Principal",
       "port": 80
     },

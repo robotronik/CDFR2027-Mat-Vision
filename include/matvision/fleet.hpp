@@ -62,6 +62,7 @@ class Fleet {
   /// résolue pour permettre l'enregistrement dans la configuration.
   nlohmann::json set_host(const std::string& key, const std::string& host, int port);
   nlohmann::json live();
+  nlohmann::json live_objects();
   nlohmann::json report(const std::string& key, double x, double y, double a = 0.0);
   void clear();
 
