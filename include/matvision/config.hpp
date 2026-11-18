@@ -23,9 +23,9 @@ struct CameraConfig {
   int height = 1080;
   int fps = 30;
   std::string fourcc = "MJPG";
-  int buffer_size = 1;
-  /// Images jetées avant lecture (0 = aucune purge). Inutile avec `buffer_size: 1`,
-  /// coûteux sinon : chaque purge attend une nouvelle image de la caméra.
+  int buffer_size = 2;  ///< Deux tampons pour chevaucher acquisition et décodage.
+  /// Images ignorées avant la lecture normale (0 = aucune purge volontaire).
+  /// Une purge fixe peut attendre de nouvelles images et réduire le débit utile.
   int drain_frames = 0;
   /// Images jetées à l'ouverture pour laisser l'exposition se stabiliser.
   int warmup_frames = 5;

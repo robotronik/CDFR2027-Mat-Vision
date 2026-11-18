@@ -47,8 +47,8 @@
     "auto_exposure": true,
     "auto_white_balance": true,
     "backend": "v4l2",
-    "buffer_size": 1,
-    "device": 2,
+    "buffer_size": 2,
+    "device": 0,
     "drain_frames": 0,
     "fourcc": "MJPG",
     "fps": 30,
@@ -185,7 +185,7 @@
       "port": 80
     },
     "main": {
-      "host": "192.168.0.103",
+      "host": "192.168.8.108",
       "name": "Principal",
       "port": 80
     },

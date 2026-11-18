@@ -630,9 +630,21 @@ curl -X POST http://192.168.1.50:5000/fleet/report -H 'Content-Type: application
 | Fluidité sur LattePanda | `camera.width/height` = 1280×720, `detection.draw` = false |
 | Marge de la ROI | `table.roi_margin_px` |
 | Annotation de l'aperçu | `detection.draw` |
-| Purge d'images à la lecture | `camera.drain_frames` (0 par défaut, à laisser à 0 avec `buffer_size: 1`) |
+| Tampons caméra | `camera.buffer_size` (`2` par défaut) |
+| Purge d'images à la lecture | `camera.drain_frames` (`0` : aucune image ignorée volontairement) |
 | Taille de l'aperçu JPEG | `preview_max_width` (1280 px par défaut, `0` = pleine résolution) |
 | Couper l'aperçu / le flux | `preview_enabled: false` (ou `--match`, qui coupe aussi l'annotation et démarre la détection) |
+
+### Configuration caméra à deux tampons
+
+Les valeurs par défaut C++ et `config/default.json` utilisent deux tampons.
+Une configuration existante contenant explicitement `"buffer_size": 1` conserve
+un tampon : il faut la modifier pour appliquer le réglage testé.
+Le périphérique par défaut du fichier est `0` et l’adresse du robot principal
+est `192.168.8.108`, conformément à l’installation testée ; adaptez-les à votre
+matériel et réseau. Le nombre de tampons ne nécessite pas de recalibrer la caméra.
+Les diagnostics temporaires de temps de capture et de réception ne font pas
+partie de ce changement.
 
 ### Zone analysée (`table.roi_mode`)
 
@@ -702,9 +714,13 @@ Points importants :
   de la caméra ;
 * la pose d'un tag est obtenue directement par `SOLVEPNP_IPPE_SQUARE` (solution
   analytique pour un carré plan), sans affinage itératif ;
-* `camera.drain_frames` vaut `0` : avec `camera.buffer_size: 1`, la trame lue est
-  déjà la plus récente, et purger des images coûterait une période de capture
-  par image jetée ;
+* `camera.buffer_size` vaut `2` : le pilote peut recevoir une image pendant le
+  décodage de la précédente. Sur la LattePanda 3 Delta et la Logitech 4K Stream
+  Edition testées en MJPG 1920×1080 à 30 images/s, ce réglage a porté le débit
+  observé d’environ 15 à 30 images/s ; le débit dépend de la scène et de la charge ;
+* `camera.drain_frames` reste à `0` : aucune image n’est volontairement ignorée.
+  Une purge fixe peut attendre de nouvelles images et réduire le débit utile.
+  Deux tampons ne garantissent pas à eux seuls un âge maximal des observations ;
 * l'aperçu JPEG est réduit à `preview_max_width` avant encodage : c'est l'encodage
   JPEG qui domine le coût d'un `/preview` ou d'un `/stream`, et il est inutile de
   l'envoyer en pleine résolution à un panneau d'affichage plus petit ;
