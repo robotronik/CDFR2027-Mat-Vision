@@ -29,8 +29,10 @@ class IFrameSource {
   virtual bool open() = 0;
   /// Lit une image ; renvoie `false` en cas d'échec.
   virtual bool read(cv::Mat& frame) = 0;
-  /// Lit l'image la plus récente (vide le tampon avant lecture).
+  /// Lit une image en ignorant éventuellement des captures avant le décodage.
   virtual bool read_latest(cv::Mat& frame, int drain = 3) = 0;
+  /// Réveille une lecture en attente avant la fermeture (sans libérer la caméra).
+  virtual void request_stop() {}
   virtual void close() = 0;
   virtual bool is_open() const = 0;
   virtual nlohmann::json info() const = 0;

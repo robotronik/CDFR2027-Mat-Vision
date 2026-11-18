@@ -1,4 +1,5 @@
 #include "matvision/vision.hpp"
+#include "matvision/latest_frame_source.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -56,7 +57,8 @@ VisionEngine::VisionEngine(const Config& config, bool display,
   for (const auto& object : config_.objects) {
     objects_config_[object.id] = object;
   }
-  camera_ = camera ? std::move(camera) : std::make_unique<Camera>(config_.camera);
+  auto source = camera ? std::move(camera) : std::make_unique<Camera>(config_.camera);
+  camera_ = std::make_unique<LatestFrameSource>(std::move(source), config_.camera.drain_frames);
 
   intrinsics_ = load_intrinsics(config_.intrinsics_path());
   if (intrinsics_) {
@@ -84,6 +86,7 @@ void VisionEngine::shutdown() {
   }
   shut_down_ = true;
   stop_requested_.store(true);
+  camera_->request_stop(); // Réveille le traitement s'il attend une image.
   if (thread_.joinable()) {
     thread_.join();
   }
@@ -320,6 +323,7 @@ void VisionEngine::run() {
   double proc_ms_sum = 0.0;
   double proc_ms_peak = 0.0;
   double aruco_ms_sum = 0.0;
+  bool camera_failed = false;
 
   while (!stop_requested_.load()) {
     if (!camera_->is_open()) {
@@ -329,6 +333,7 @@ void VisionEngine::run() {
         error_.clear();
         MV_LOGI("caméra ouverte");
       } catch (const CameraError& exc) {
+        camera_failed = true;
         {
           std::lock_guard<std::mutex> lock(mutex_);
           error_ = exc.what();
@@ -344,6 +349,7 @@ void VisionEngine::run() {
     try {
       ok = camera_->read_latest(frame, config_.camera.drain_frames);
     } catch (const CameraError& exc) {
+      camera_failed = true;
       std::lock_guard<std::mutex> lock(mutex_);
       error_ = exc.what();
       stats_.failed += 1;
@@ -353,6 +359,12 @@ void VisionEngine::run() {
       std::lock_guard<std::mutex> lock(mutex_);
       stats_.failed += 1;
       continue;
+    }
+
+    if (camera_failed) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      error_.clear();
+      camera_failed = false;
     }
 
     if (!frame_size_checked_) {

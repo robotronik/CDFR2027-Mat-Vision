@@ -1,6 +1,7 @@
 #pragma once
 
-/// Moteur de vision : une seule boucle possède la caméra.
+/// Moteur de vision : capture/décodage et traitement dans deux threads séparés.
+/// Une seule image décodée peut attendre ; une plus récente remplace cette attente.
 ///
 /// Le moteur fonctionne en tâche de fond et expose un état thread-safe consommé
 /// par l'API REST. Deux modes de traitement :
@@ -36,7 +37,7 @@ enum class VisionMode { Idle, Detect, Calibrate };
 
 std::string to_string(VisionMode mode);
 
-/// Compteurs et mesures de la boucle de capture.
+/// Compteurs et mesures de la boucle de traitement.
 struct FrameStats {
   int frames = 0;
   int failed = 0;
@@ -129,7 +130,7 @@ class VisionEngine {
   double last_table_fail_log_s_ = 0.0;
   bool shut_down_ = false;
 
-  // Tampons réutilisés à chaque image (boucle de capture uniquement).
+  // Tampons réutilisés à chaque image (boucle de traitement uniquement).
   cv::Mat gray_;
   std::vector<int> detected_ids_;
   std::vector<Marker> detected_corners_;

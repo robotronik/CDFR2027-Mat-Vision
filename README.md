@@ -42,7 +42,9 @@ zone (`table.roi_mode`, voir §9).
 
 ```mermaid
 flowchart LR
-    CAM["Webcam USB<br/>Logitech 4K Stream"] --> ENG["VisionEngine<br/>(une seule boucle)"]
+    CAM["Webcam USB<br/>Logitech 4K Stream"] --> CAP["Thread capture<br/>lecture et décodage"]
+    CAP --> SLOT["Une image décodée en attente<br/>la plus récente remplace l’ancienne"]
+    SLOT --> ENG["VisionEngine<br/>thread de traitement"]
     ENG --> AR["ArucoDetector<br/>détection des tags"]
     AR --> CORN["4 tags de coin"]
     CORN --> POSE["Pose caméra dans le repère table<br/>solvePnP (intrinsèques requises)"]
@@ -76,9 +78,10 @@ Mat-CDFR2027/
 │   ├── fleet.hpp                 # flotte de robots
 │   ├── geometry.hpp              # Position, angles, coins de tags, ROI, projection
 │   ├── logger.hpp                # journalisation console
+│   ├── latest_frame_source.hpp   # capture dédiée, une image décodée en attente
 │   ├── table.hpp                 # pose caméra (solvePnP) + changement de base
 │   ├── util.hpp                  # temps, minuscules, arrondis
-│   └── vision.hpp                # moteur (boucle, modes, relevé des objets)
+│   └── vision.hpp                # moteur (traitement, modes, relevé des objets)
 ├── src/
 │   ├── api.cpp                   # routes + interface web + MJPEG
 │   ├── aruco.cpp
@@ -646,6 +649,32 @@ matériel et réseau. Le nombre de tampons ne nécessite pas de recalibrer la ca
 Les diagnostics temporaires de temps de capture et de réception ne font pas
 partie de ce changement.
 
+### Capture et traitement en parallèle
+
+Le serveur active cette organisation par défaut, sans variable d’environnement :
+
+* un seul thread possède la caméra, réalise les lectures et décode les images ;
+* le thread de vision traite la dernière image décodée disponible ;
+* une seule image décodée peut attendre. Si la capture arrive en avance, la plus
+  récente remplace l’ancienne image en attente. L’image en cours de traitement
+  n’est jamais modifiée par la capture ;
+* à l’arrêt, le traitement en attente est réveillé avant de joindre les threads.
+  La caméra est libérée par son thread propriétaire. Une lecture qui échoue
+  entraîne une fermeture et une nouvelle tentative après deux secondes.
+
+Cette attente décodée est distincte des deux tampons du pilote caméra. Le nombre
+maximal d’images traitées reste limité par la caméra et le coût de détection.
+Sur la configuration MJPG 1920×1080 testée avec environ 35 objets, le passage
+séquentiel → parallèle a porté le débit observé d’environ 25,5 à 30 images/s.
+Ces résultats ne garantissent pas le même débit avec une autre caméra ou scène.
+
+`GET /status` expose `camera.threaded_capture` : captures, images transmises au
+traitement, anciennes images en attente remplacées, erreurs et durées moyennes.
+Les durées de lecture incluent l’attente d’une image caméra ; le temps en attente
+après décodage ne mesure pas l’âge depuis l’exposition du capteur. Les compteurs
+sont cumulatifs depuis le démarrage de la capture. Aucun diagnostic temporaire
+d’horodatage du pilote, changement HTTP ou apprentissage de couleur n’est inclus.
+
 ### Zone analysée (`table.roi_mode`)
 
 Les tags de coin sont à ±400 mm en x alors que la table mesure 2000 mm : le
@@ -831,8 +860,8 @@ plongeante, tags de coin et objets) et vérifie toute la chaîne, y compris l'AP
 avec une caméra factice :
 
 ```bash
-cmake --build build -j          # construit aussi matvision-tests
-./build/matvision-tests         # ou : ctest --test-dir build
+cmake --build build -j          # construit les deux exécutables de tests
+ctest --test-dir build --output-on-failure
 ```
 
 Couverture : géométrie et conventions d'angle, détection ArUco, **pose caméra par
@@ -844,6 +873,11 @@ toutes les routes de l'API, l'interface web (page HTML, ressources statiques,
 négociation de contenu, flux MJPEG borné) et la flotte de robots (état,
 stratégies, pilotage d'un robot simulé par un petit serveur HTTP, déclarations de
 position et vue live).
+
+Le test `latest_frame_source` vérifie aussi le propriétaire unique de la caméra,
+la stabilité d’une image pendant son traitement, l’ordre des images, le
+remplacement de l’image en attente, le redémarrage sans ancienne image, la reprise
+après une erreur et l’arrêt du moteur quand la caméra est indisponible.
 
 Exemple de sortie :
 

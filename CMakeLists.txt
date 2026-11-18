@@ -50,3 +50,8 @@ enable_testing()
 add_executable(matvision-tests tests/test_main.cpp)
 target_link_libraries(matvision-tests PRIVATE matvision_core)
 add_test(NAME smoke COMMAND matvision-tests)
+
+add_executable(matvision-thread-tests tests/test_latest_frame_source.cpp)
+target_link_libraries(matvision-thread-tests PRIVATE matvision_core)
+add_test(NAME latest_frame_source COMMAND matvision-thread-tests)
+set_tests_properties(latest_frame_source PROPERTIES TIMEOUT 15)
