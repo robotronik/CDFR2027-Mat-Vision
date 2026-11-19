@@ -15,6 +15,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio highgui calib3d objdetect aruco)
 find_package(Threads REQUIRED)
 
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  add_compile_options(-Wall -Wextra)
+endif()
+
 add_library(matvision_core STATIC
   src/logger.cpp
   src/geometry.cpp
@@ -35,7 +39,6 @@ target_include_directories(matvision_core PUBLIC
 )
 target_link_libraries(matvision_core PUBLIC ${OpenCV_LIBS} Threads::Threads)
 target_compile_definitions(matvision_core PUBLIC MATVISION_PROJECT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
-target_compile_options(matvision_core PRIVATE -Wall -Wextra)
 
 add_executable(matvision-server src/main_server.cpp)
 target_link_libraries(matvision-server PRIVATE matvision_core)
@@ -47,3 +50,8 @@ enable_testing()
 add_executable(matvision-tests tests/test_main.cpp)
 target_link_libraries(matvision-tests PRIVATE matvision_core)
 add_test(NAME smoke COMMAND matvision-tests)
+
+add_executable(matvision-thread-tests tests/test_latest_frame_source.cpp)
+target_link_libraries(matvision-thread-tests PRIVATE matvision_core)
+add_test(NAME latest_frame_source COMMAND matvision-thread-tests)
+set_tests_properties(latest_frame_source PROPERTIES TIMEOUT 15)

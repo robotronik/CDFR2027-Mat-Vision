@@ -44,7 +44,7 @@
 
     let fleet;
     try {
-      fleet = await fetch('/fleet', { cache: 'no-store' }).then((response) => response.json());
+      fleet = await window.matvision.api('/fleet');
     } catch (error) {
       hint.textContent = `Flotte indisponible : ${error.message}`;
       return;

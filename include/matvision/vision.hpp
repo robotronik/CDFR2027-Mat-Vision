@@ -1,6 +1,7 @@
 #pragma once
 
-/// Moteur de vision : une seule boucle possède la caméra.
+/// Moteur de vision : capture/décodage et traitement dans deux threads séparés.
+/// Une seule image décodée peut attendre ; une plus récente remplace cette attente.
 ///
 /// Le moteur fonctionne en tâche de fond et expose un état thread-safe consommé
 /// par l'API REST. Deux modes de traitement :
@@ -27,7 +28,7 @@
 #include "matvision/camera.hpp"
 #include "matvision/config.hpp"
 #include "matvision/geometry.hpp"
-#include "matvision/json.hpp"
+#include <nlohmann/json.hpp>
 #include "matvision/table.hpp"
 
 namespace matvision {
@@ -35,6 +36,21 @@ namespace matvision {
 enum class VisionMode { Idle, Detect, Calibrate };
 
 std::string to_string(VisionMode mode);
+
+/// Compteurs et mesures de la boucle de traitement.
+struct FrameStats {
+  int frames = 0;
+  int failed = 0;
+  int detections = 0;
+  double fps = 0.0;
+  double last_frame_ts = 0.0;
+  double proc_ms = 0.0;
+  double proc_ms_max = 0.0;
+  double last_proc_ms = 0.0;
+  double aruco_ms = 0.0;  ///< part de `proc_ms` passée dans le détecteur ArUco
+
+  nlohmann::json to_json() const;
+};
 
 class VisionEngine {
  public:
@@ -63,34 +79,36 @@ class VisionEngine {
   bool save_frame(const std::string& path);
   /// Met à jour l'adresse d'un robot dans la configuration effective (pour que
   /// `GET /config` reste cohérent avec les changements faits depuis l'interface).
-  void update_robot_host(const std::string& key, const std::string& host, int port);
+  bool update_robot_host(const std::string& key, const std::string& host, int port);
 
   // -- lectures d'état ------------------------------------------------
   nlohmann::json status();
-  nlohmann::json objects(const std::string& label = "") ;
+  nlohmann::json objects(const std::string& label = "");
   nlohmann::json camera_position();
   nlohmann::json table_info();
+  nlohmann::json config_json() const;
+  std::string intrinsics_path() const;
+  RobotsConfig robots_config() const;
   std::optional<std::vector<unsigned char>> preview_jpeg(int quality = -1);
-
-  const Config& config() const { return config_; }
 
  private:
   void run();
-  cv::Mat handle_frame(const cv::Mat& frame);
-  cv::Mat detect(const cv::Mat& frame);
+  cv::Mat handle_frame(cv::Mat frame);
+  cv::Mat detect(cv::Mat frame);
   nlohmann::json locate_object(const ObjectConfig& object, const Marker& corners,
-                               const TableLocalization& localization);
+                               const TableLocalization& localization,
+                               const Intrinsics* intrinsics);
   void log_localization(const TableLocalization& localization);
   void check_intrinsics_resolution(int width, int height);
   void finish_calibration();
   std::vector<std::string> hud_lines();
-  const Intrinsics* intrinsics() const { return intrinsics_ ? &intrinsics_.value() : nullptr; }
 
   Config config_;
   bool display_ = false;
 
   std::unique_ptr<ArucoDetector> detector_;
   std::map<int, ObjectConfig> objects_config_;
+  std::vector<int> corner_ids_;
   std::unique_ptr<IFrameSource> camera_;
 
   std::optional<Intrinsics> intrinsics_;
@@ -112,7 +130,13 @@ class VisionEngine {
   double last_table_fail_log_s_ = 0.0;
   bool shut_down_ = false;
 
-  nlohmann::json stats_;
+  // Tampons réutilisés à chaque image (boucle de traitement uniquement).
+  cv::Mat gray_;
+  std::vector<int> detected_ids_;
+  std::vector<Marker> detected_corners_;
+  double last_aruco_ms_ = 0.0;
+
+  FrameStats stats_;
 };
 
 }  // namespace matvision

@@ -30,8 +30,6 @@ const char* level_name(LogLevel level) {
 
 void set_log_level(LogLevel level) { g_level.store(static_cast<int>(level)); }
 
-LogLevel log_level() { return static_cast<LogLevel>(g_level.load()); }
-
 bool log_enabled(LogLevel level) {
   return static_cast<int>(level) >= g_level.load();
 }

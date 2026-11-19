@@ -1,7 +1,7 @@
 #include "matvision/vision.hpp"
+#include "matvision/latest_frame_source.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <sstream>
 
@@ -11,6 +11,7 @@
 
 #include "matvision/logger.hpp"
 #include "matvision/overlay.hpp"
+#include "matvision/util.hpp"
 
 namespace matvision {
 
@@ -21,22 +22,6 @@ constexpr double kPerfLogIntervalS = 5.0;
 
 /// Intervalle minimal entre deux avertissements « repère non défini ».
 constexpr double kTableWarnIntervalS = 5.0;
-
-double steady_seconds() {
-  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
-
-double wall_seconds() {
-  return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch())
-      .count();
-}
-
-nlohmann::json default_stats() {
-  return {{"frames", 0},      {"failed", 0},      {"detections", 0},
-          {"fps", 0.0},       {"last_frame_ts", 0.0},
-          {"proc_ms", 0.0},   {"proc_ms_max", 0.0}, {"last_proc_ms", 0.0}};
-}
 
 }  // namespace
 
@@ -52,14 +37,28 @@ std::string to_string(VisionMode mode) {
   return "idle";
 }
 
+nlohmann::json FrameStats::to_json() const {
+  return {{"frames", frames},
+          {"failed", failed},
+          {"detections", detections},
+          {"fps", fps},
+          {"last_frame_ts", last_frame_ts},
+          {"proc_ms", proc_ms},
+          {"proc_ms_max", proc_ms_max},
+          {"last_proc_ms", last_proc_ms},
+          {"aruco_ms", aruco_ms}};
+}
+
 VisionEngine::VisionEngine(const Config& config, bool display,
                            std::unique_ptr<IFrameSource> camera)
-    : config_(config), display_(display), stats_(default_stats()) {
+    : config_(config), display_(display) {
   detector_ = std::make_unique<ArucoDetector>(config_.aruco.dictionary, config_.aruco.params);
+  corner_ids_ = config_.table.marker_ids();
   for (const auto& object : config_.objects) {
     objects_config_[object.id] = object;
   }
-  camera_ = camera ? std::move(camera) : std::make_unique<Camera>(config_.camera);
+  auto source = camera ? std::move(camera) : std::make_unique<Camera>(config_.camera);
+  camera_ = std::make_unique<LatestFrameSource>(std::move(source), config_.camera.drain_frames);
 
   intrinsics_ = load_intrinsics(config_.intrinsics_path());
   if (intrinsics_) {
@@ -87,6 +86,7 @@ void VisionEngine::shutdown() {
   }
   shut_down_ = true;
   stop_requested_.store(true);
+  camera_->request_stop(); // Réveille le traitement s'il attend une image.
   if (thread_.joinable()) {
     thread_.join();
   }
@@ -103,7 +103,7 @@ nlohmann::json VisionEngine::start_detection() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     objects_.clear();
-    stats_["detections"] = 0;
+    stats_.detections = 0;
     mode_ = VisionMode::Detect;
   }
   MV_LOGI("détection démarrée");
@@ -125,7 +125,7 @@ nlohmann::json VisionEngine::reset() {
     objects_.clear();
     localization_ = TableLocalization();
     localization_.reason = "en attente";
-    stats_["detections"] = 0;
+    stats_.detections = 0;
     last_table_ok_ = false;
   }
   MV_LOGI("relevés réinitialisés");
@@ -175,9 +175,25 @@ void VisionEngine::reload_intrinsics() {
   intrinsics_ = loaded;
 }
 
-void VisionEngine::update_robot_host(const std::string& key, const std::string& host, int port) {
+bool VisionEngine::update_robot_host(const std::string& key, const std::string& host,
+                                     int port) {
   std::lock_guard<std::mutex> lock(mutex_);
-  apply_robot_host(config_.robots, key, host, port);
+  return apply_robot_host(config_.robots, key, host, port);
+}
+
+nlohmann::json VisionEngine::config_json() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return config_.to_json();
+}
+
+std::string VisionEngine::intrinsics_path() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return config_.intrinsics_path();
+}
+
+RobotsConfig VisionEngine::robots_config() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return config_.robots;
 }
 
 bool VisionEngine::save_frame(const std::string& path) {
@@ -203,10 +219,8 @@ nlohmann::json VisionEngine::status() {
   data["table"] = localization_.to_json();
   data["intrinsics"] = intrinsics_ ? intrinsics_->summary() : nlohmann::json(nullptr);
   data["intrinsics_warning"] = intrinsics_warning_;
-  data["stats"] = stats_;
-  data["uptime_s"] = started_at_ > 0.0
-                         ? std::round((steady_seconds() - started_at_) * 10.0) / 10.0
-                         : 0.0;
+  data["stats"] = stats_.to_json();
+  data["uptime_s"] = started_at_ > 0.0 ? round_to(steady_seconds() - started_at_, 1) : 0.0;
   return data;
 }
 
@@ -217,19 +231,10 @@ nlohmann::json VisionEngine::objects(const std::string& label) {
     items = objects_;
   }
   if (!label.empty()) {
-    std::string lowered = label;
-    std::transform(lowered.begin(), lowered.end(), lowered.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const std::string wanted = lowered(label);
     items.erase(std::remove_if(items.begin(), items.end(),
                                [&](const nlohmann::json& item) {
-                                 std::string value =
-                                     item.value("label", std::string());
-                                 std::transform(
-                                     value.begin(), value.end(), value.begin(),
-                                     [](unsigned char c) {
-                                       return static_cast<char>(std::tolower(c));
-                                     });
-                                 return value != lowered;
+                                 return lowered(item.value("label", std::string())) != wanted;
                                }),
                 items.end());
   }
@@ -238,12 +243,8 @@ nlohmann::json VisionEngine::objects(const std::string& label) {
   for (const auto& item : items) {
     by_label[item.value("label", std::string())].push_back(item);
   }
-  nlohmann::json array = nlohmann::json::array();
-  for (const auto& item : items) {
-    array.push_back(item);
-  }
   return {{"count", items.size()},
-          {"objects", array},
+          {"objects", items},
           {"by_label", by_label},
           {"frame", "table"}};
 }
@@ -267,27 +268,14 @@ nlohmann::json VisionEngine::camera_position() {
 
 nlohmann::json VisionEngine::table_info() {
   std::lock_guard<std::mutex> lock(mutex_);
-  nlohmann::json markers = nlohmann::json::array();
-  for (const auto& marker : config_.table.markers) {
-    markers.push_back({{"id", marker.id},
-                       {"x", marker.x},
-                       {"y", marker.y},
-                       {"a", marker.a},
-                       {"size", marker.size}});
-  }
+  nlohmann::json markers = config_.table.markers;
   nlohmann::json objects = nlohmann::json::array();
   for (const auto& object : config_.objects) {
-    nlohmann::json item = {{"id", object.id},
-                           {"label", object.label.empty() ? std::to_string(object.id)
-                                                          : object.label},
-                           {"angle_offset", object.angle_offset},
-                           {"offset", {object.offset[0], object.offset[1]}},
-                           {"size", object.size}};
-    if (object.box.has_value()) {
-      item["box"] = {{"length_mm", object.box->length_mm},
-                     {"width_mm", object.box->width_mm},
-                     {"height_mm", object.box->height_mm}};
-    } else {
+    nlohmann::json item = object;
+    if (item["label"].get<std::string>().empty()) {
+      item["label"] = std::to_string(object.id);
+    }
+    if (!item.contains("box")) {
       item["box"] = nullptr;
     }
     objects.push_back(item);
@@ -302,18 +290,27 @@ nlohmann::json VisionEngine::table_info() {
 }
 
 std::optional<std::vector<unsigned char>> VisionEngine::preview_jpeg(int quality) {
-  cv::Mat frame;
+  cv::Mat preview;
+  int effective_quality = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (latest_frame_.empty()) {
       return std::nullopt;
     }
-    frame = latest_frame_.clone();
+    // Réduction sous verrou : elle évite une copie pleine résolution et reste
+    // bien plus courte que l'encodage JPEG.
+    if (config_.preview_max_width > 0 && latest_frame_.cols > config_.preview_max_width) {
+      const double scale =
+          static_cast<double>(config_.preview_max_width) / latest_frame_.cols;
+      cv::resize(latest_frame_, preview, cv::Size(), scale, scale, cv::INTER_LINEAR);
+    } else {
+      preview = latest_frame_.clone();
+    }
+    effective_quality = quality >= 0 ? quality : config_.preview_quality;
   }
-  const int effective = quality >= 0 ? quality : config_.preview_quality;
   std::vector<unsigned char> buffer;
-  const std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, effective};
-  if (!cv::imencode(".jpg", frame, buffer, params)) {
+  const std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, effective_quality};
+  if (!cv::imencode(".jpg", preview, buffer, params)) {
     return std::nullopt;
   }
   return buffer;
@@ -325,6 +322,8 @@ void VisionEngine::run() {
   double last_perf_log = window_start;
   double proc_ms_sum = 0.0;
   double proc_ms_peak = 0.0;
+  double aruco_ms_sum = 0.0;
+  bool camera_failed = false;
 
   while (!stop_requested_.load()) {
     if (!camera_->is_open()) {
@@ -334,6 +333,7 @@ void VisionEngine::run() {
         error_.clear();
         MV_LOGI("caméra ouverte");
       } catch (const CameraError& exc) {
+        camera_failed = true;
         {
           std::lock_guard<std::mutex> lock(mutex_);
           error_ = exc.what();
@@ -347,17 +347,24 @@ void VisionEngine::run() {
     cv::Mat frame;
     bool ok = false;
     try {
-      ok = camera_->read_latest(frame, 2);
+      ok = camera_->read_latest(frame, config_.camera.drain_frames);
     } catch (const CameraError& exc) {
+      camera_failed = true;
       std::lock_guard<std::mutex> lock(mutex_);
       error_ = exc.what();
-      stats_["failed"] = stats_["failed"].get<int>() + 1;
+      stats_.failed += 1;
       continue;
     }
     if (!ok || frame.empty()) {
       std::lock_guard<std::mutex> lock(mutex_);
-      stats_["failed"] = stats_["failed"].get<int>() + 1;
+      stats_.failed += 1;
       continue;
+    }
+
+    if (camera_failed) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      error_.clear();
+      camera_failed = false;
     }
 
     if (!frame_size_checked_) {
@@ -377,14 +384,16 @@ void VisionEngine::run() {
     }
     const double proc_ms = (steady_seconds() - proc_started) * 1000.0;
     proc_ms_sum += proc_ms;
+    aruco_ms_sum += last_aruco_ms_;
+    last_aruco_ms_ = 0.0;
     proc_ms_peak = std::max(proc_ms_peak, proc_ms);
 
     {
       std::lock_guard<std::mutex> lock(mutex_);
       latest_frame_ = annotated;
-      stats_["frames"] = stats_["frames"].get<int>() + 1;
-      stats_["last_frame_ts"] = wall_seconds();
-      stats_["last_proc_ms"] = std::round(proc_ms * 100.0) / 100.0;
+      stats_.frames += 1;
+      stats_.last_frame_ts = wall_seconds();
+      stats_.last_proc_ms = round_to(proc_ms, 2);
     }
 
     ++frames_window;
@@ -393,20 +402,23 @@ void VisionEngine::run() {
     if (elapsed >= 1.0) {
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        stats_["fps"] = std::round(frames_window / elapsed * 10.0) / 10.0;
-        stats_["proc_ms"] = std::round(proc_ms_sum / frames_window * 100.0) / 100.0;
-        stats_["proc_ms_max"] = std::round(proc_ms_peak * 100.0) / 100.0;
+        stats_.fps = round_to(frames_window / elapsed, 1);
+        stats_.proc_ms = round_to(proc_ms_sum / frames_window, 2);
+        stats_.proc_ms_max = round_to(proc_ms_peak, 2);
+        stats_.aruco_ms = round_to(aruco_ms_sum / frames_window, 2);
       }
       if (now - last_perf_log >= kPerfLogIntervalS) {
         std::lock_guard<std::mutex> lock(mutex_);
-        MV_LOGI("perf: " << stats_["fps"] << " fps | traitement " << stats_["proc_ms"]
-                         << " ms/image (max " << stats_["proc_ms_max"] << " ms) | mode="
-                         << to_string(mode_) << " | objets=" << objects_.size());
+        MV_LOGI("perf: " << stats_.fps << " fps | traitement " << stats_.proc_ms
+                         << " ms/image (max " << stats_.proc_ms_max << " ms, arUco "
+                         << stats_.aruco_ms << " ms) | mode=" << to_string(mode_)
+                         << " | objets=" << objects_.size());
         last_perf_log = now;
         proc_ms_peak = 0.0;
       }
       frames_window = 0;
       proc_ms_sum = 0.0;
+      aruco_ms_sum = 0.0;
       window_start = now;
     }
 
@@ -424,7 +436,7 @@ void VisionEngine::run() {
   }
 }
 
-cv::Mat VisionEngine::handle_frame(const cv::Mat& frame) {
+cv::Mat VisionEngine::handle_frame(cv::Mat frame) {
   VisionMode mode;
   AutoCalibrator* calibrator = nullptr;
   {
@@ -449,34 +461,38 @@ cv::Mat VisionEngine::handle_frame(const cv::Mat& frame) {
   }
 
   if (config_.detection.draw) {
-    cv::Mat canvas = frame.clone();
-    draw_hud(canvas, hud_lines());
-    return canvas;
+    draw_hud(frame, hud_lines());
   }
   return frame;
 }
 
-cv::Mat VisionEngine::detect(const cv::Mat& frame) {
-  cv::Mat gray;
-  cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+cv::Mat VisionEngine::detect(cv::Mat frame) {
+  // `frame` est un tampon privé (copie faite par la caméra) : l'annotation est
+  // faite en place, sans clone.
+  cv::cvtColor(frame, gray_, cv::COLOR_BGR2GRAY);
 
-  std::vector<int> detected_ids;
-  std::vector<Marker> detected_corners;
-  detector_->detect(gray, detected_ids, detected_corners, nullptr, cv::Mat(), true);
+  const double detect_started = steady_seconds();
+  detected_ids_.clear();
+  detected_corners_.clear();
+  detector_->detect(gray_, detected_ids_, detected_corners_);
+  last_aruco_ms_ = (steady_seconds() - detect_started) * 1000.0;
 
-  const std::vector<int> corner_ids = config_.table.marker_ids();
   MarkerMap corner_markers;
-  for (std::size_t i = 0; i < detected_ids.size(); ++i) {
-    if (std::find(corner_ids.begin(), corner_ids.end(), detected_ids[i]) != corner_ids.end()) {
-      corner_markers.emplace(detected_ids[i], detected_corners[i]);
+  for (std::size_t i = 0; i < detected_ids_.size(); ++i) {
+    if (std::find(corner_ids_.begin(), corner_ids_.end(), detected_ids_[i]) !=
+        corner_ids_.end()) {
+      corner_markers.emplace(detected_ids_[i], detected_corners_[i]);
     }
   }
 
-  const Intrinsics* intr;
+  std::optional<Intrinsics> intrinsics_copy;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    intr = intrinsics();
+    if (intrinsics_) {
+      intrinsics_copy = *intrinsics_;
+    }
   }
+  const Intrinsics* intr = intrinsics_copy ? &*intrinsics_copy : nullptr;
 
   const TableLocalization localization =
       localize_table(corner_markers, config_.table, intr);
@@ -485,7 +501,10 @@ cv::Mat VisionEngine::detect(const cv::Mat& frame) {
   std::vector<nlohmann::json> objects;
   std::vector<ObjectAnnotation> annotations;
   if (localization.ok && intr != nullptr) {
+    // La ROI est un simple polygone : les détections hors zone sont écartées
+    // après coup, ce qui évite une seconde passe complète du détecteur ArUco.
     std::vector<std::vector<cv::Point2f>> groups;
+    groups.reserve(corner_markers.size() + 1);
     for (const auto& [id, corners] : corner_markers) {
       groups.push_back(corners);
     }
@@ -495,28 +514,22 @@ cv::Mat VisionEngine::detect(const cv::Mat& frame) {
         groups.push_back(quad);
       }
     }
-    const cv::Mat mask =
-        build_roi_mask(gray.size(), groups, config_.table.roi_margin_px);
+    const std::vector<cv::Point2f> roi = build_roi_polygon(groups);
 
     // La détection brute conserve les doublons : un même identifiant peut
     // apparaître plusieurs fois (ex. plusieurs éléments de jeu taggés 13).
-    std::vector<int> object_ids;
-    std::vector<Marker> object_corners;
-    if (mask.empty()) {
-      object_ids = detected_ids;
-      object_corners = detected_corners;
-    } else {
-      detector_->detect(gray, object_ids, object_corners, nullptr, mask, true);
-    }
-
-    annotations.reserve(object_ids.size());
-    for (std::size_t i = 0; i < object_ids.size(); ++i) {
+    annotations.reserve(detected_ids_.size());
+    for (std::size_t i = 0; i < detected_ids_.size(); ++i) {
+      if (!point_in_roi(roi, marker_center(detected_corners_[i]), config_.table.roi_margin_px)) {
+        continue;
+      }
       ObjectAnnotation annotation;
-      annotation.id = object_ids[i];
-      annotation.corners = object_corners[i];
+      annotation.id = detected_ids_[i];
+      annotation.corners = detected_corners_[i];
       const auto it = objects_config_.find(annotation.id);
       if (it != objects_config_.end()) {
-        nlohmann::json item = locate_object(it->second, annotation.corners, localization);
+        nlohmann::json item =
+            locate_object(it->second, annotation.corners, localization, intr);
         if (!item.is_null()) {
           objects.push_back(item);
           annotation.object = item;
@@ -530,29 +543,23 @@ cv::Mat VisionEngine::detect(const cv::Mat& frame) {
     std::lock_guard<std::mutex> lock(mutex_);
     localization_ = localization;
     objects_ = objects;
-    stats_["detections"] = static_cast<int>(objects.size());
+    stats_.detections = static_cast<int>(objects.size());
   }
 
   if (config_.detection.draw) {
-    cv::Mat canvas = frame.clone();
-    annotate(canvas, corner_markers, annotations, localization);
-    draw_hud(canvas, hud_lines());
-    return canvas;
+    annotate(frame, corner_markers, annotations, localization);
+    draw_hud(frame, hud_lines());
   }
   return frame;
 }
 
 nlohmann::json VisionEngine::locate_object(const ObjectConfig& object, const Marker& corners,
-                                           const TableLocalization& localization) {
-  const Intrinsics* intr;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    intr = intrinsics();
-  }
-  if (intr == nullptr) {
+                                           const TableLocalization& localization,
+                                           const Intrinsics* intrinsics) {
+  if (intrinsics == nullptr) {
     return nullptr;
   }
-  const auto pose = solve_tag_pose(corners, object.size, *intr);
+  const auto pose = solve_tag_pose(corners, object.size, *intrinsics);
   if (!pose.has_value()) {
     return nullptr;
   }
@@ -598,19 +605,22 @@ void VisionEngine::log_localization(const TableLocalization& localization) {
 }
 
 void VisionEngine::check_intrinsics_resolution(int width, int height) {
-  const Intrinsics* intr;
+  std::optional<Intrinsics> intrinsics_copy;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    intr = intrinsics();
+    if (intrinsics_) {
+      intrinsics_copy = *intrinsics_;
+    }
   }
-  if (intr == nullptr || intr->image_size.width == 0) {
+  if (!intrinsics_copy || intrinsics_copy->image_size.width == 0) {
     return;
   }
-  if (intr->image_size.width == width && intr->image_size.height == height) {
+  if (intrinsics_copy->image_size.width == width && intrinsics_copy->image_size.height == height) {
     return;
   }
   std::ostringstream oss;
-  oss << "calibration faite en " << intr->image_size.width << 'x' << intr->image_size.height
+  oss << "calibration faite en " << intrinsics_copy->image_size.width << 'x'
+      << intrinsics_copy->image_size.height
       << " mais la caméra fournit du " << width << 'x' << height
       << " : les positions seront fausses. Relancez « matvision-calibrate » à cette résolution.";
   MV_LOGW(oss.str());
@@ -643,7 +653,7 @@ void VisionEngine::finish_calibration() {
 
 std::vector<std::string> VisionEngine::hud_lines() {
   VisionMode mode;
-  nlohmann::json stats;
+  FrameStats stats;
   TableLocalization localization;
   std::string error;
   {
@@ -655,10 +665,10 @@ std::vector<std::string> VisionEngine::hud_lines() {
   }
 
   std::ostringstream line1;
-  line1 << "mode: " << to_string(mode) << "   fps: " << stats.value("fps", 0.0)
-        << "   frames: " << stats.value("frames", 0);
+  line1 << "mode: " << to_string(mode) << "   fps: " << stats.fps
+        << "   frames: " << stats.frames;
   std::ostringstream line2;
-  line2 << "objets: " << stats.value("detections", 0) << "   résidu: "
+  line2 << "objets: " << stats.detections << "   résidu: "
         << static_cast<int>(localization.residual_px) << " px   tags: "
         << localization.used_ids.size();
   std::vector<std::string> lines{line1.str(), line2.str()};

@@ -1,13 +1,11 @@
 #include "matvision/camera.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cctype>
-#include <cstdio>
-#include <filesystem>
 #include <glob.h>
 
 #include "matvision/logger.hpp"
+#include "matvision/util.hpp"
 
 namespace matvision {
 
@@ -25,13 +23,11 @@ int fourcc_to_code(const std::string& fourcc) {
 }
 
 int backend_to_flag(const std::string& backend) {
-  std::string lowered = backend;
-  std::transform(lowered.begin(), lowered.end(), lowered.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  if (lowered == "v4l2") {
+  const std::string name = lowered(backend);
+  if (name == "v4l2") {
     return cv::CAP_V4L2;
   }
-  if (lowered == "dshow") {
+  if (name == "dshow") {
     return cv::CAP_DSHOW;
   }
   return cv::CAP_ANY;
@@ -118,7 +114,7 @@ nlohmann::json Camera::info() const {
           {"width", size_.width},
           {"height", size_.height},
           {"fourcc", fourcc_},
-          {"fps", std::round(fps_ * 100.0) / 100.0},
+          {"fps", round_to(fps_, 2)},
           {"requested",
            {{"width", config_.width},
             {"height", config_.height},
@@ -167,35 +163,6 @@ std::vector<std::string> list_video_devices() {
   globfree(&results);
   std::sort(devices.begin(), devices.end());
   return devices;
-}
-
-nlohmann::json probe(const std::string& device, double /*timeout_s*/) {
-  CameraConfig config;
-  config.device = device;
-  config.warmup_frames = 3;
-  Camera camera(config);
-  const auto started = std::chrono::steady_clock::now();
-  try {
-    camera.open();
-    cv::Mat frame;
-    const bool ok = camera.read_latest(frame, 2);
-    const double elapsed =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-    nlohmann::json rows = nullptr;
-    if (!frame.empty()) {
-      rows = {frame.rows, frame.cols, frame.channels()};
-    }
-    return {{"ok", ok && !frame.empty()},
-            {"info", camera.info()},
-            {"elapsed_s", std::round(elapsed * 1000.0) / 1000.0},
-            {"frame_shape", rows}};
-  } catch (const CameraError& exc) {
-    const double elapsed =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-    return {{"ok", false},
-            {"error", exc.what()},
-            {"elapsed_s", std::round(elapsed * 1000.0) / 1000.0}};
-  }
 }
 
 }  // namespace matvision

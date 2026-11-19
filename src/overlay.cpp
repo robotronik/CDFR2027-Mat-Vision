@@ -3,7 +3,6 @@
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
 
-#include "matvision/aruco.hpp"
 #include "matvision/logger.hpp"
 
 namespace matvision {
@@ -21,6 +20,26 @@ cv::Point2f table_to_image(const cv::Point3d& point, const TableLocalization& lo
       project_points_3d({point}, localization.rvec, localization.tvec,
                         intrinsics.camera_matrix, intrinsics.dist_coeffs);
   return projected.empty() ? cv::Point2f(0.0f, 0.0f) : projected[0];
+}
+
+std::vector<cv::Point> marker_polygon(const Marker& corners) {
+  std::vector<cv::Point> points;
+  points.reserve(corners.size());
+  for (const auto& corner : corners) {
+    points.emplace_back(cv::Point(cvRound(corner.x), cvRound(corner.y)));
+  }
+  return points;
+}
+
+void draw_centered_text(cv::Mat& frame, const std::string& text, const cv::Point2f& center,
+                        const cv::Scalar& color, double scale = 0.6, int thickness = 2) {
+  int baseline = 0;
+  const cv::Size text_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, scale, thickness,
+                                             &baseline);
+  cv::putText(frame, text,
+              cv::Point(cvRound(center.x) - text_size.width / 2,
+                        cvRound(center.y) + text_size.height / 2),
+              cv::FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv::LINE_AA);
 }
 
 }  // namespace
@@ -56,16 +75,34 @@ void annotate(cv::Mat& frame, const MarkerMap& corner_markers,
               const TableLocalization& localization) {
   MV_LOGD("annotate : " << corner_markers.size() << " tags de coin, " << objects.size()
                         << " tags objets");
-  draw_markers(frame, corner_markers, kCornerColor);
 
+  // Tous les contours sont tracés en un seul appel par couleur.
+  std::vector<std::vector<cv::Point>> corner_polygons;
+  corner_polygons.reserve(corner_markers.size());
+  for (const auto& [id, corners] : corner_markers) {
+    corner_polygons.push_back(marker_polygon(corners));
+  }
+  if (!corner_polygons.empty()) {
+    cv::polylines(frame, corner_polygons, true, kCornerColor, 2, cv::LINE_AA);
+    for (const auto& [id, corners] : corner_markers) {
+      draw_centered_text(frame, std::to_string(id), marker_center(corners), kCornerColor);
+    }
+  }
+
+  std::vector<std::vector<cv::Point>> object_polygons;
+  object_polygons.reserve(objects.size());
   for (const auto& detection : objects) {
-    MarkerMap single;
-    single.emplace(detection.id, detection.corners);
-    draw_markers(frame, single, kObjectColor);
+    object_polygons.push_back(marker_polygon(detection.corners));
+  }
+  if (!object_polygons.empty()) {
+    cv::polylines(frame, object_polygons, true, kObjectColor, 2, cv::LINE_AA);
+  }
+  for (const auto& detection : objects) {
+    const cv::Point2f center = marker_center(detection.corners);
+    draw_centered_text(frame, std::to_string(detection.id), center, kObjectColor);
     if (detection.object.is_null()) {
       continue;
     }
-    const cv::Point2f center = marker_center(detection.corners);
     std::ostringstream oss;
     oss << detection.object.value("label", std::string()) << " ("
         << static_cast<int>(detection.object.value("x", 0.0)) << ','

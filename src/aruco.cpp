@@ -107,31 +107,24 @@ void apply_parameters(cv::aruco::DetectorParameters& params, const nlohmann::jso
 
 }  // namespace
 
-cv::aruco::DetectorParameters default_detector_parameters() {
-  return cv::aruco::DetectorParameters();
-}
-
-ArucoDetector::ArucoDetector(const std::string& dictionary, const nlohmann::json& params)
-    : dictionary_name_(dictionary) {
+ArucoDetector::ArucoDetector(const std::string& dictionary, const nlohmann::json& params) {
   cv::aruco::PredefinedDictionaryType type;
   if (!dictionary_from_name(dictionary, type)) {
     throw std::invalid_argument("dictionnaire ArUco inconnu : " + dictionary);
   }
-  dictionary_ = cv::aruco::getPredefinedDictionary(type);
-  parameters_ = default_detector_parameters();
-  apply_parameters(parameters_, params);
-  detector_ = cv::aruco::ArucoDetector(dictionary_, parameters_);
+  cv::aruco::DetectorParameters parameters;
+  apply_parameters(parameters, params);
+  detector_ = cv::aruco::ArucoDetector(cv::aruco::getPredefinedDictionary(type), parameters);
   MV_LOGD("détecteur ArUco prêt (dictionnaire=" << dictionary << ")");
 }
 
 void ArucoDetector::detect(const cv::Mat& image, std::vector<int>& ids,
-                           std::vector<Marker>& corners, std::vector<Marker>* rejected,
-                           const cv::Mat& mask, bool gray) const {
+                           std::vector<Marker>& corners, const cv::Mat& mask) const {
   cv::Mat gray_image;
-  if (gray) {
-    gray_image = image;
-  } else {
+  if (image.channels() == 3) {
     cv::cvtColor(image, gray_image, cv::COLOR_BGR2GRAY);
+  } else {
+    gray_image = image;
   }
 
   cv::Mat working = gray_image;
@@ -141,22 +134,15 @@ void ArucoDetector::detect(const cv::Mat& image, std::vector<int>& ids,
 
   corners.clear();
   ids.clear();
-  std::vector<Marker> rejected_local;
-  if (rejected != nullptr) {
-    rejected->clear();
-    detector_.detectMarkers(working, corners, ids, *rejected);
-  } else {
-    detector_.detectMarkers(working, corners, ids, rejected_local);
-  }
+  detector_.detectMarkers(working, corners, ids);
   MV_LOGD("detectMarkers : " << ids.size() << " tag(s) (masque=" << (mask.empty() ? "non" : "oui")
                              << ")");
 }
 
-MarkerMap ArucoDetector::detect_by_id(const cv::Mat& image, const cv::Mat& mask,
-                                      bool gray) const {
+MarkerMap ArucoDetector::detect_by_id(const cv::Mat& image, const cv::Mat& mask) const {
   std::vector<int> ids;
   std::vector<Marker> corners;
-  detect(image, ids, corners, nullptr, mask, gray);
+  detect(image, ids, corners, mask);
   MarkerMap result;
   for (std::size_t i = 0; i < ids.size(); ++i) {
     result[ids[i]] = corners[i];

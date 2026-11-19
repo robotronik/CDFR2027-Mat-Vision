@@ -1,7 +1,6 @@
 #include "matvision/calibration.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <ctime>
 #include <filesystem>
@@ -15,6 +14,7 @@
 
 #include "matvision/geometry.hpp"
 #include "matvision/logger.hpp"
+#include "matvision/util.hpp"
 
 namespace matvision {
 
@@ -22,11 +22,6 @@ namespace {
 
 constexpr int kCalibCbFlags =
     cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE | cv::CALIB_CB_FAST_CHECK;
-
-double wall_seconds() {
-  const auto now = std::chrono::system_clock::now();
-  return std::chrono::duration<double>(now.time_since_epoch()).count();
-}
 
 std::string iso_now() {
   const std::time_t seconds = std::time(nullptr);
@@ -127,6 +122,22 @@ double mean_reprojection_error(const cv::Mat& matrix, const cv::Mat& dist,
 
 }  // namespace
 
+std::string to_string(CalibrationStatus status) {
+  switch (status) {
+    case CalibrationStatus::Idle:
+      return "idle";
+    case CalibrationStatus::Running:
+      return "running";
+    case CalibrationStatus::Done:
+      return "done";
+    case CalibrationStatus::Failed:
+      return "failed";
+    case CalibrationStatus::Cancelled:
+      return "cancelled";
+  }
+  return "idle";
+}
+
 double Intrinsics::fx() const { return camera_matrix.empty() ? 0.0 : camera_matrix.at<double>(0, 0); }
 
 double Intrinsics::fy() const { return camera_matrix.empty() ? 0.0 : camera_matrix.at<double>(1, 1); }
@@ -147,16 +158,14 @@ nlohmann::json Intrinsics::summary() const {
   nlohmann::json info = to_json();
   const double fx = this->fx();
   const double fy = this->fy();
-  info["fov_x_deg"] =
-      fx != 0.0 ? nlohmann::json(std::round(2.0 * std::atan(image_size.width / (2.0 * fx)) *
-                                            180.0 / kPi * 100.0) /
-                                 100.0)
-                : nlohmann::json(nullptr);
-  info["fov_y_deg"] =
-      fy != 0.0 ? nlohmann::json(std::round(2.0 * std::atan(image_size.height / (2.0 * fy)) *
-                                            180.0 / kPi * 100.0) /
-                                 100.0)
-                : nlohmann::json(nullptr);
+  const auto fov = [this](double focal, int pixels) {
+    return focal != 0.0
+               ? nlohmann::json(round_to(
+                     2.0 * std::atan(pixels / (2.0 * focal)) * 180.0 / kPi, 2))
+               : nlohmann::json(nullptr);
+  };
+  info["fov_x_deg"] = fov(fx, image_size.width);
+  info["fov_y_deg"] = fov(fy, image_size.height);
   return info;
 }
 
@@ -184,9 +193,7 @@ std::string calibration_file_kind(const std::string& path) {
   if (dot == std::string::npos) {
     return "inconnu";
   }
-  std::string ext = path.substr(dot);
-  std::transform(ext.begin(), ext.end(), ext.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  const std::string ext = lowered(path.substr(dot));
   if (ext == ".json") {
     return "json";
   }
@@ -259,18 +266,18 @@ std::optional<Intrinsics> load_intrinsics(const std::string& path) {
 nlohmann::json CalibrationState::to_json() const {
   const double elapsed =
       started_at > 0.0 ? (finished_at > 0.0 ? finished_at : wall_seconds()) - started_at : 0.0;
-  return {{"status", status},
+  return {{"status", to_string(status)},
           {"found", found},
           {"captured", captured},
           {"target", target},
           {"attempts", attempts},
-          {"sharpness", std::round(sharpness * 10.0) / 10.0},
-          {"area_ratio", std::round(area_ratio * 10000.0) / 10000.0},
-          {"movement", std::round(movement * 1000.0) / 1000.0},
+          {"sharpness", round_to(sharpness, 1)},
+          {"area_ratio", round_to(area_ratio, 4)},
+          {"movement", round_to(movement, 3)},
           {"message", message},
-          {"rms", rms.has_value() ? nlohmann::json(std::round(rms.value() * 10000.0) / 10000.0)
+          {"rms", rms.has_value() ? nlohmann::json(round_to(rms.value(), 4))
                                   : nlohmann::json(nullptr)},
-          {"elapsed_s", std::round(elapsed * 10.0) / 10.0}};
+          {"elapsed_s", round_to(elapsed, 1)}};
 }
 
 AutoCalibrator::AutoCalibrator(const CalibrationConfig& config) : config_(config) {
@@ -284,7 +291,7 @@ CalibrationState AutoCalibrator::start() {
   last_corners_.reset();
   image_size_ = cv::Size(0, 0);
   state_ = CalibrationState();
-  state_.status = "running";
+  state_.status = CalibrationStatus::Running;
   state_.target = config_.target_frames;
   state_.started_at = wall_seconds();
   MV_LOGI("session de calibration démarrée (objectif : " << state_.target << " vues)");
@@ -292,8 +299,8 @@ CalibrationState AutoCalibrator::start() {
 }
 
 CalibrationState AutoCalibrator::cancel() {
-  if (state_.status == "running") {
-    state_.status = "cancelled";
+  if (state_.status == CalibrationStatus::Running) {
+    state_.status = CalibrationStatus::Cancelled;
     state_.finished_at = wall_seconds();
     state_.message = "calibration annulée";
     MV_LOGI("calibration annulée");
@@ -302,7 +309,9 @@ CalibrationState AutoCalibrator::cancel() {
 }
 
 bool AutoCalibrator::finished() const {
-  return state_.status == "done" || state_.status == "failed" || state_.status == "cancelled";
+  return state_.status == CalibrationStatus::Done ||
+         state_.status == CalibrationStatus::Failed ||
+         state_.status == CalibrationStatus::Cancelled;
 }
 
 double AutoCalibrator::progress() const {
@@ -415,7 +424,7 @@ void AutoCalibrator::process(const cv::Mat& frame) {
 
 std::shared_ptr<Intrinsics> AutoCalibrator::compute() {
   if (object_points_.size() < 5) {
-    state_.status = "failed";
+    state_.status = CalibrationStatus::Failed;
     state_.finished_at = wall_seconds();
     state_.message = "échec : " + std::to_string(object_points_.size()) +
                      " vue(s) exploitable(s), 5 minimum requises";
@@ -435,7 +444,7 @@ std::shared_ptr<Intrinsics> AutoCalibrator::compute() {
     rms = cv::calibrateCamera(object_points_, image_points_, image_size_, matrix, dist, rvecs,
                               tvecs, flags);
   } catch (const cv::Exception& exc) {
-    state_.status = "failed";
+    state_.status = CalibrationStatus::Failed;
     state_.finished_at = wall_seconds();
     state_.message = std::string("échec de calibrateCamera : ") + exc.what();
     MV_LOGE(state_.message);
@@ -454,7 +463,7 @@ std::shared_ptr<Intrinsics> AutoCalibrator::compute() {
 
   state_.intrinsics = intrinsics;
   state_.rms = intrinsics->rms;
-  state_.status = "done";
+  state_.status = CalibrationStatus::Done;
   state_.finished_at = wall_seconds();
   std::ostringstream oss;
   oss << "calibration terminée (erreur de reprojection " << std::fixed << std::setprecision(3)
@@ -494,7 +503,7 @@ void AutoCalibrator::finalize_timeout() {
   if (object_points_.size() >= 5) {
     compute();
   } else {
-    state_.status = "failed";
+    state_.status = CalibrationStatus::Failed;
     state_.finished_at = wall_seconds();
     state_.message = "délai dépassé : seulement " + std::to_string(object_points_.size()) +
                      " vue(s) capturée(s)";

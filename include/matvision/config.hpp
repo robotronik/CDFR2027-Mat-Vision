@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-#include "matvision/json.hpp"
+#include <nlohmann/json.hpp>
 
 namespace matvision {
 
@@ -23,14 +23,25 @@ struct CameraConfig {
   int height = 1080;
   int fps = 30;
   std::string fourcc = "MJPG";
-  int buffer_size = 1;
-  int warmup_frames = 5; //TODO what does it mean ?
+  int buffer_size = 2;  ///< Deux tampons pour chevaucher acquisition et décodage.
+  /// Images ignorées avant la lecture normale (0 = aucune purge volontaire).
+  /// Une purge fixe peut attendre de nouvelles images et réduire le débit utile.
+  int drain_frames = 0;
+  /// Images jetées à l'ouverture pour laisser l'exposition se stabiliser.
+  int warmup_frames = 5;
   bool auto_exposure = true;
   bool auto_white_balance = true;
 
   bool device_is_index() const;
   int device_index() const;
+
+  NLOHMANN_DEFINE_TYPE_INTRUSIVE_ONLY_SERIALIZE(CameraConfig, device, backend, width, height, fps,
+                                                fourcc, buffer_size, drain_frames, warmup_frames,
+                                                auto_exposure, auto_white_balance)
 };
+
+/// `device` accepte un index numérique ou un chemin.
+void from_json(const nlohmann::json& data, CameraConfig& camera);
 
 /// Tag de coin : position connue dans le repère table (mm).
 struct CornerMarker {
@@ -39,18 +50,27 @@ struct CornerMarker {
   double y = 0.0;
   double a = 0.0;
   double size = 100.0;
+
+  NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(CornerMarker, id, x, y, a, size)
 };
 
 /// Géométrie de la table et tags de coin.
 struct TableConfig {
   double width_mm = 2000.0;   ///< axe x
   double height_mm = 3000.0;  ///< axe y
-  std::vector<CornerMarker> markers;
+  std::vector<CornerMarker> markers = {
+      CornerMarker{20, -400.0, -900.0, 0.0, 100.0},
+      CornerMarker{21, -400.0, 900.0, 0.0, 100.0},
+      CornerMarker{22, 400.0, -900.0, 0.0, 100.0},
+      CornerMarker{23, 400.0, 900.0, 0.0, 100.0},
+  };
   std::string roi_mode = "table";  ///< "table" = tout le tapis, "markers" = quadrilatère des tags
   int roi_margin_px = 25;
 
-  TableConfig();
   std::vector<int> marker_ids() const;
+
+  NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(TableConfig, width_mm, height_mm, markers, roi_mode,
+                                              roi_margin_px)
 };
 
 /// Boîte d'un élément de jeu, décrite autour de son tag.
@@ -58,6 +78,8 @@ struct BoxConfig {
   double length_mm = 320.0;
   double width_mm = 110.0;
   double height_mm = 110.0;
+
+  NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(BoxConfig, length_mm, width_mm, height_mm)
 };
 
 /// Objet de la table identifié par un tag ArUco (robot ou élément de jeu).
@@ -70,9 +92,14 @@ struct ObjectConfig {
   std::optional<BoxConfig> box;
 };
 
+void to_json(nlohmann::json& data, const ObjectConfig& object);
+void from_json(const nlohmann::json& data, ObjectConfig& object);
+
 /// Réglages de la détection en continu.
 struct DetectionConfig {
   bool draw = true;
+
+  NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(DetectionConfig, draw)
 };
 
 /// Calibration automatique des intrinsèques (damier).
@@ -89,6 +116,11 @@ struct CalibrationConfig {
   int border_margin_px = 10;
   double max_capture_seconds = 120.0;
   std::string flags = "CALIB_RATIONAL_MODEL";
+
+  NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(
+      CalibrationConfig, intrinsics_file, chessboard_cols, chessboard_rows, square_size_mm,
+      target_frames, min_board_area_ratio, max_board_area_ratio, min_sharpness, min_move_ratio,
+      border_margin_px, max_capture_seconds, flags)
 };
 
 /// Un robot pilotable par le mat via son API REST embarquée.
@@ -115,9 +147,16 @@ struct RobotsConfig {
   std::vector<std::pair<std::string, const RobotConfig*>> targets() const;
 };
 
+void to_json(nlohmann::json& data, const RobotConfig& robot);
+void from_json(const nlohmann::json& data, RobotConfig& robot);
+void to_json(nlohmann::json& data, const RobotsConfig& robots);
+void from_json(const nlohmann::json& data, RobotsConfig& robots);
+
 struct ArucoConfig {
   std::string dictionary = "DICT_4X4_50";
   nlohmann::json params;
+
+  NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(ArucoConfig, dictionary, params)
 };
 
 /// Configuration complète du mat de vision.
@@ -132,6 +171,8 @@ struct Config {
   std::string api_host = "0.0.0.0";
   int api_port = 5000;
   int preview_quality = 75;
+  /// Largeur maximale de l'aperçu JPEG (0 = pleine résolution).
+  int preview_max_width = 1280;
 
   /// Chemin absolu du fichier de calibration intrinsèque.
   std::string intrinsics_path() const;

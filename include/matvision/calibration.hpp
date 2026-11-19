@@ -10,7 +10,7 @@
 #include <opencv2/core.hpp>
 
 #include "matvision/config.hpp"
-#include "matvision/json.hpp"
+#include <nlohmann/json.hpp>
 
 namespace matvision {
 
@@ -43,9 +43,13 @@ bool save_intrinsics(const std::string& path, const Intrinsics& intrinsics);
 /// Charge une calibration JSON ou (compatibilité) un `.yml` OpenCV.
 std::optional<Intrinsics> load_intrinsics(const std::string& path);
 
+enum class CalibrationStatus { Idle, Running, Done, Failed, Cancelled };
+
+std::string to_string(CalibrationStatus status);
+
 /// État d'une session de calibration (exposé par l'API).
 struct CalibrationState {
-  std::string status = "idle";  // idle | running | done | failed | cancelled
+  CalibrationStatus status = CalibrationStatus::Idle;
   bool found = false;
   int captured = 0;
   int target = 0;
@@ -69,7 +73,7 @@ class AutoCalibrator {
 
   CalibrationState start();
   CalibrationState cancel();
-  bool running() const { return state_.status == "running"; }
+  bool running() const { return state_.status == CalibrationStatus::Running; }
   bool finished() const;
   double progress() const;
   const CalibrationState& state() const { return state_; }

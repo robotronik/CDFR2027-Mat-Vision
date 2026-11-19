@@ -42,7 +42,9 @@ zone (`table.roi_mode`, voir §9).
 
 ```mermaid
 flowchart LR
-    CAM["Webcam USB<br/>Logitech 4K Stream"] --> ENG["VisionEngine<br/>(une seule boucle)"]
+    CAM["Webcam USB<br/>Logitech 4K Stream"] --> CAP["Thread capture<br/>lecture et décodage"]
+    CAP --> SLOT["Une image décodée en attente<br/>la plus récente remplace l’ancienne"]
+    SLOT --> ENG["VisionEngine<br/>thread de traitement"]
     ENG --> AR["ArucoDetector<br/>détection des tags"]
     AR --> CORN["4 tags de coin"]
     CORN --> POSE["Pose caméra dans le repère table<br/>solvePnP (intrinsèques requises)"]
@@ -71,12 +73,15 @@ Mat-CDFR2027/
 │   ├── aruco.hpp                 # détecteur ArUco + tracé
 │   ├── calibration.hpp           # Intrinsics, AutoCalibrator
 │   ├── camera.hpp                # source d'images (webcam USB, IFrameSource)
+│   ├── cli.hpp                   # analyse d'arguments des exécutables
 │   ├── config.hpp                # structures de configuration
 │   ├── fleet.hpp                 # flotte de robots
 │   ├── geometry.hpp              # Position, angles, coins de tags, ROI, projection
 │   ├── logger.hpp                # journalisation console
+│   ├── latest_frame_source.hpp   # capture dédiée, une image décodée en attente
 │   ├── table.hpp                 # pose caméra (solvePnP) + changement de base
-│   └── vision.hpp                # moteur (boucle, modes, relevé des objets)
+│   ├── util.hpp                  # temps, minuscules, arrondis
+│   └── vision.hpp                # moteur (traitement, modes, relevé des objets)
 ├── src/
 │   ├── api.cpp                   # routes + interface web + MJPEG
 │   ├── aruco.cpp
@@ -93,6 +98,7 @@ Mat-CDFR2027/
 ├── web/
 │   ├── index.html                # page de l'interface web (4 onglets)
 │   └── static/
+│       ├── common.js             # utilitaires partagés (API, HTML, toast, canvas)
 │       ├── app.js                # onglet Vision (aperçu, plan, calibration)
 │       ├── tabs.js               # navigation entre les onglets
 │       ├── fleet.js              # onglets Stratégie et Live table
@@ -124,10 +130,26 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
+Un `Makefile` fournit les mêmes commandes en raccourci :
+
+```bash
+make build          # configuration + compilation (Release)
+make test           # compilation + tests
+make run            # compilation + serveur
+make run-match      # compilation + serveur en mode match (API seule)
+make calibrate      # compilation + calibration
+BUILD_TYPE=Debug make build
+make clean
+```
+
 Deux binaires sont produits :
 
 * `build/matvision-server` — API REST + détection ;
 * `build/matvision-calibrate` — calibration intrinsèque et contrôle du repère.
+
+Les ressources (`config/`, `web/`, `data/`) sont cherchées depuis le répertoire
+courant (et ses parents, jusqu'à 5 niveaux). La variable d'environnement
+`MATVISION_ROOT` permet de forcer la racine si le binaire est déplacé.
 
 Vérification rapide de la caméra :
 
@@ -388,6 +410,7 @@ stable.
 ```bash
 ./build/matvision-server                   # API sur 0.0.0.0:5000, détection à la demande
 ./build/matvision-server --autostart       # détection lancée immédiatement
+./build/matvision-server --match           # match : détection seule, API seule (sans aperçu)
 ./build/matvision-server --display         # + fenêtre locale d'aperçu
 ./build/matvision-server --device 1 --width 3840 --height 2160
 ```
@@ -395,9 +418,21 @@ stable.
 L'API démarre même si la caméra est absente : le moteur retente l'ouverture
 toutes les 2 s et `/health` renvoie alors `ok: false`.
 
-Il n'y a plus qu'**un seul mode de détection** (« classique ») : le moteur cherche
-les 4 tags de coin pour estimer la pose caméra, puis relève les objets. Les
-anciens modes `--test` et `--match` ont été supprimés.
+Il n'y a qu'**un seul algorithme de détection** : le moteur cherche les 4 tags de
+coin pour estimer la pose caméra, puis relève les objets. `--match` n'est pas un
+second algorithme mais un **mode d'exécution allégé**, prévu pour les matchs :
+
+| Effet de `--match` | Détail |
+|---|---|
+| annotation et tracé désactivés | `detection.draw = false` (aucun tracé, aucun HUD) |
+| aucune image conservée | le tampon de la caméra n'est plus copié entre deux images |
+| `/preview`, `/stream`, `/snapshot` → `503` | `preview_enabled = false` : plus aucun encodage JPEG possible |
+| détection lancée au démarrage | équivalent à `--autostart` |
+| `--display` ignoré | avertissement au démarrage |
+
+Tout le reste de l'API (`/objects`, `/position`, `/table`, `/status`,
+`/calibration/…`, `/fleet/…`) fonctionne normalement : c'est ce que consomme le
+robot pendant le match. Voir §9 pour le gain mesuré.
 
 ### 7.1 Interface web
 
@@ -503,14 +538,14 @@ Repères utiles :
 | `GET` | `/objects/<clé>` | Objets d'un tag (`36`) ou d'un libellé (`bleu`) |
 | `GET` | `/position` | Pose de la caméra dans le repère table |
 | `GET` | `/table` | Géométrie de la table, tags de coin, objets |
-| `GET` | `/preview` | Dernière image annotée (JPEG, `?quality=`) |
-| `GET` | `/stream` | Flux MJPEG temps réel (`?fps=`, `?frames=`, `?max_seconds=`) |
+| `GET` | `/preview` | Dernière image annotée (JPEG, `?quality=`, largeur plafonnée par `preview_max_width`) ; alias `/preview.jpg` ; `503` en mode match |
+| `GET` | `/stream` | Flux MJPEG temps réel (`?fps=`, `?frames=`, `?max_seconds=`) ; `503` en mode match |
 | `GET` | `/config` | Configuration effective |
-| `POST` | `/calibration/start` | Lance la calibration automatique |
+| `GET`/`POST` | `/calibration/start` | Lance la calibration automatique |
 | `GET` | `/calibration/status` | Progression (vues capturées, message) |
-| `POST` | `/calibration/stop` | Annule la calibration |
+| `GET`/`POST` | `/calibration/stop` | Annule la calibration ; alias `/calibration/cancel` |
 | `GET` | `/calibration/result` | Intrinsèques courantes |
-| `POST` | `/snapshot` | Enregistre l'image courante (`?path=`) |
+| `POST` | `/snapshot` | Enregistre l'image courante (`?path=`) ; `503` en mode match |
 | `POST` | `/shutdown` | Arrête le serveur **et le processus** (`501` si non câblé) |
 | `GET` | `/fleet` | État des robots : en ligne, couleur, stratégie, table |
 | `GET` | `/fleet/strategies` | Stratégies disponibles par robot |
@@ -598,6 +633,47 @@ curl -X POST http://192.168.1.50:5000/fleet/report -H 'Content-Type: application
 | Fluidité sur LattePanda | `camera.width/height` = 1280×720, `detection.draw` = false |
 | Marge de la ROI | `table.roi_margin_px` |
 | Annotation de l'aperçu | `detection.draw` |
+| Tampons caméra | `camera.buffer_size` (`2` par défaut) |
+| Purge d'images à la lecture | `camera.drain_frames` (`0` : aucune image ignorée volontairement) |
+| Taille de l'aperçu JPEG | `preview_max_width` (1280 px par défaut, `0` = pleine résolution) |
+| Couper l'aperçu / le flux | `preview_enabled: false` (ou `--match`, qui coupe aussi l'annotation et démarre la détection) |
+
+### Configuration caméra à deux tampons
+
+Les valeurs par défaut C++ et `config/default.json` utilisent deux tampons.
+Une configuration existante contenant explicitement `"buffer_size": 1` conserve
+un tampon : il faut la modifier pour appliquer le réglage testé.
+Le périphérique par défaut du fichier est `0` et l’adresse du robot principal
+est `192.168.8.108`, conformément à l’installation testée ; adaptez-les à votre
+matériel et réseau. Le nombre de tampons ne nécessite pas de recalibrer la caméra.
+Les diagnostics temporaires de temps de capture et de réception ne font pas
+partie de ce changement.
+
+### Capture et traitement en parallèle
+
+Le serveur active cette organisation par défaut, sans variable d’environnement :
+
+* un seul thread possède la caméra, réalise les lectures et décode les images ;
+* le thread de vision traite la dernière image décodée disponible ;
+* une seule image décodée peut attendre. Si la capture arrive en avance, la plus
+  récente remplace l’ancienne image en attente. L’image en cours de traitement
+  n’est jamais modifiée par la capture ;
+* à l’arrêt, le traitement en attente est réveillé avant de joindre les threads.
+  La caméra est libérée par son thread propriétaire. Une lecture qui échoue
+  entraîne une fermeture et une nouvelle tentative après deux secondes.
+
+Cette attente décodée est distincte des deux tampons du pilote caméra. Le nombre
+maximal d’images traitées reste limité par la caméra et le coût de détection.
+Sur la configuration MJPG 1920×1080 testée avec environ 35 objets, le passage
+séquentiel → parallèle a porté le débit observé d’environ 25,5 à 30 images/s.
+Ces résultats ne garantissent pas le même débit avec une autre caméra ou scène.
+
+`GET /status` expose `camera.threaded_capture` : captures, images transmises au
+traitement, anciennes images en attente remplacées, erreurs et durées moyennes.
+Les durées de lecture incluent l’attente d’une image caméra ; le temps en attente
+après décodage ne mesure pas l’âge depuis l’exposition du capteur. Les compteurs
+sont cumulatifs depuis le démarrage de la capture. Aucun diagnostic temporaire
+d’horodatage du pilote, changement HTTP ou apprentissage de couleur n’est inclus.
 
 ### Zone analysée (`table.roi_mode`)
 
@@ -631,6 +707,63 @@ La Logitech 4K Stream Edition permet `camera.width: 3840`, `camera.height: 2160`
 `fourcc: MJPG`. Si le CPU de la LattePanda Delta sature, réduisez d'abord
 `detection.draw` puis la résolution — ou ne détectez les tags de coin qu'en
 basse résolution et les objets en pleine résolution.
+
+### Coût d'une image
+
+Le traitement d'une image (hors capture) se décompose ainsi, mesuré sur une scène
+synthétique 1920×1080 (9 tags) :
+
+| Étape | Coût | Remarque |
+|---|---|---|
+| `cvtColor` BGR→gris | ~1 ms | tampon réutilisé d'une image à l'autre |
+| **détection ArUco** | **~85 %** | une seule passe sur l'image grise |
+| pose caméra (`solvePnP`) | ~0,4 ms | 4 tags de coin |
+| filtre ROI + pose des tags | ~0,4 ms | appartenance à un polygone (`pointPolygonTest`) |
+| annotation (`detection.draw`) | ~2,7 ms | tracés groupés en un appel par couleur |
+
+Sur la même scène, le coût total par image selon le mode d'exécution :
+
+| Mode | Coût/image | Remarque |
+|---|---|---|
+| défaut (annotation + aperçu) | ~20 ms | |
+| `detection.draw: false` | ~16 ms | plus aucun tracé |
+| **`--match`** | **~15 ms** | ni tracé, ni image conservée, ni encodage |
+
+Les deux dernières lignes comptent l'encodage d'un client qui regarde le flux :
+avec un onglet **Vision** ouvert, c'est ~12 ms de plus par image serveur (thread
+HTTP), en concurrence avec la détection. `--match` supprime complètement ce coût
+puisqu'aucun aperçu n'est produit.
+
+Points importants :
+
+* **une seule passe ArUco** : les détections hors de la zone analysée (§ ci-dessus)
+  sont écartées *après* coup par un test d'appartenance au polygone, au lieu de
+  relancer tout le détecteur sur une image masquée ;
+* **pas de copie d'image** : l'annotation est faite en place dans le tampon privé
+  de la caméra ;
+* la pose d'un tag est obtenue directement par `SOLVEPNP_IPPE_SQUARE` (solution
+  analytique pour un carré plan), sans affinage itératif ;
+* `camera.buffer_size` vaut `2` : le pilote peut recevoir une image pendant le
+  décodage de la précédente. Sur la LattePanda 3 Delta et la Logitech 4K Stream
+  Edition testées en MJPG 1920×1080 à 30 images/s, ce réglage a porté le débit
+  observé d’environ 15 à 30 images/s ; le débit dépend de la scène et de la charge ;
+* `camera.drain_frames` reste à `0` : aucune image n’est volontairement ignorée.
+  Une purge fixe peut attendre de nouvelles images et réduire le débit utile.
+  Deux tampons ne garantissent pas à eux seuls un âge maximal des observations ;
+* l'aperçu JPEG est réduit à `preview_max_width` avant encodage : c'est l'encodage
+  JPEG qui domine le coût d'un `/preview` ou d'un `/stream`, et il est inutile de
+  l'envoyer en pleine résolution à un panneau d'affichage plus petit ;
+* en mode match (`--match`) l'image n'est même pas conservée : le tampon de la
+  caméra est libéré dès l'image traitée.
+
+Les leviers restants, par ordre d'efficacité, sont donc la **résolution**
+capturée, `detection.draw`, puis les paramètres ArUco (`adaptiveThreshWinSizeStep`,
+`cornerRefinementMethod`) — au prix de la robustesse de détection.
+
+Sur le robot, le coût réel se lit dans `GET /status` : `stats.proc_ms` (moyenne
+par image sur la dernière seconde), `stats.last_proc_ms`, `stats.proc_ms_max` et
+`stats.aruco_ms` (part du détecteur ArUco) ; le journal console en donne un bilan
+toutes les 5 s (`perf: … fps | traitement … ms/image`).
 
 ### Robots (flotte)
 
@@ -727,17 +860,24 @@ plongeante, tags de coin et objets) et vérifie toute la chaîne, y compris l'AP
 avec une caméra factice :
 
 ```bash
-cmake --build build -j          # construit aussi matvision-tests
-./build/matvision-tests         # ou : ctest --test-dir build
+cmake --build build -j          # construit les deux exécutables de tests
+ctest --test-dir build --output-on-failure
 ```
 
 Couverture : géométrie et conventions d'angle, détection ArUco, **pose caméra par
 `solvePnP`** (sans homographie) et changement de base, positions des objets en
-mm/deg, ROI, sérialisation de la calibration, calibration automatique sur damier
-synthétique, avertissement de résolution, toutes les routes de l'API, l'interface
-web (page HTML, ressources statiques, négociation de contenu, flux MJPEG borné)
-et la flotte de robots (état, stratégies, pilotage d'un robot simulé par un petit
-serveur HTTP, déclarations de position et vue live).
+mm/deg, filtrage par zone analysée (`table` / `markers`), réduction de l'aperçu,
+mode match (API seule, sans image conservée), sérialisation de la calibration,
+calibration automatique sur damier synthétique, avertissement de résolution,
+toutes les routes de l'API, l'interface web (page HTML, ressources statiques,
+négociation de contenu, flux MJPEG borné) et la flotte de robots (état,
+stratégies, pilotage d'un robot simulé par un petit serveur HTTP, déclarations de
+position et vue live).
+
+Le test `latest_frame_source` vérifie aussi le propriétaire unique de la caméra,
+la stabilité d’une image pendant son traitement, l’ordre des images, le
+remplacement de l’image en attente, le redémarrage sans ancienne image, la reprise
+après une erreur et l’arrêt du moteur quand la caméra est indisponible.
 
 Exemple de sortie :
 
